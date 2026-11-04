@@ -1,0 +1,11 @@
+/target
+/tmp
+/.build
+/dist
+/.env
+/.env.*
+/settings.toml
+/tasks.json
+/shelf.json
+/water.json
+*.log

@@ -1,0 +1,402 @@
+[tray]
+tooltip = "Lumi"
+
+[tray.menu]
+settings = "Settings..."
+minimalNotch = "Minimal Notch"
+mascot = "Mimo"
+mouseMove = "Cursor activity"
+quit = "Exit"
+
+[calendar.weekdays]
+mon = "Mon"
+tue = "Tue"
+wed = "Wed"
+thu = "Thu"
+fri = "Fri"
+sat = "Sat"
+sun = "Sun"
+
+[calendar.months]
+jan = "Jan"
+feb = "Feb"
+mar = "Mar"
+apr = "Apr"
+may = "May"
+jun = "Jun"
+jul = "Jul"
+aug = "Aug"
+sep = "Sep"
+oct = "Oct"
+nov = "Nov"
+dec = "Dec"
+
+[notch.music]
+idleTitle = "Nothing playing"
+notConfiguredSubtitle = "Play music in Music Assistant or a Windows media app"
+connectingSubtitle = "Connecting to Music Assistant..."
+authFailedSubtitle = "Authentication failed — check your token"
+unavailableSubtitle = "Music Assistant server unavailable"
+readySubtitle = "Waiting for playback"
+
+[notch.lyrics]
+loading = "Searching synced lyrics..."
+notFound = "No synced lyrics for this track"
+unavailable = "Play a track to see synced lyrics"
+
+[notch.shelf]
+title = "Shelf"
+addButton = "Add"
+clearButton = "Clear"
+dropTitle = "Drop files here"
+releaseTitle = "Release to add"
+dropSubtitle = "Drag out anytime · click to open"
+folderLabel = "Folder"
+
+[notch.todo]
+daily = "Daily"
+once = "Once"
+titlePrefix = "Todo"
+titleAccent = "List"
+completedToday = "Task Done Today"
+addButton = "Add Task"
+editButton = "Edit Task"
+doneEditButton = "Done"
+voiceButton = "Voice"
+voiceRecording = "Stop"
+voiceTranscribing = "Wait..."
+inputPlaceholder = "Write a task..."
+saveButton = "Save"
+cancelButton = "Cancel"
+emptyHint = "No tasks yet — add one or tap Voice"
+
+[notch.headphones]
+defaultName = "Headphones"
+connectedWithBattery = "Connected · {percent}%"
+connectedNoBattery = "Connected"
+disconnectedTitle = "No Headphones"
+disconnectedSubtitle = "Connect Bluetooth headphones"
+
+[notch.charging]
+title = "Charging"
+subtitle = "Charger connected"
+onBatteryTitle = "On Battery"
+onBatterySubtitle = "Running on battery power"
+
+[settings.window]
+title = "Lumi — Settings"
+subtitle = "Configure appearance, Music Assistant and local Wyoming Whisper"
+
+[settings.general]
+sectionTitle = "General"
+languageLabel = "Language"
+languageSystem = "System"
+languageEnglish = "English"
+languageSpanish = "Español"
+minimalNotchLabel = "Minimal notch"
+mascotLabel = "Mimo"
+restAfterLabel = "Rest after quiet (seconds)"
+lyricsLabel = "Fetch synced lyrics (LRCLIB)"
+
+[settings.musicAssistant]
+sectionTitle = "Music Assistant (Local Source)"
+enabledLabel = "Enable Music Assistant integration"
+serverUrlLabel = "Server URL"
+serverUrlPlaceholder = "http://localhost:8095"
+tokenLabel = "Long-lived Access Token"
+tokenPlaceholder = "Paste your Music Assistant token"
+queueIdLabel = "Player / Queue ID (optional)"
+queueIdPlaceholder = "Leave empty to play locally on this PC"
+
+[settings.wyoming]
+sectionTitle = "Voice To-Do (Local Wyoming Whisper)"
+enabledLabel = "Enable Wyoming Whisper voice tasks"
+hostLabel = "Server Host"
+hostPlaceholder = "localhost"
+portLabel = "TCP Port"
+languageLabel = "Speech Language (ISO 639-1)"
+languagePlaceholder = "es"
+
+[settings.actions]
+saveButton = "Save Changes"
+closeButton = "Close"
+
+[settings.status]
+invalidWater = "Use a positive goal/bottle and an active period within the day."
+invalidConnection = "Enter a valid server URL, host and language for enabled integrations."
+saved = "Settings applied and saved"
+unsaved = "Unsaved changes"
+invalidNumber = "Check numeric fields (port and rest seconds)"
+
+[voice.error]
+notConfigured = "Enable Wyoming Whisper in Settings first"
+emptyTranscript = "No speech detected"
+alreadyRecording = "Microphone is already recording"
+notRecording = "No active recording"
+noMicrophone = "No microphone detected"
+microphone = "Microphone access failed"
+unsupportedFormat = "Unsupported microphone audio format"
+connect = "Cannot connect to Wyoming server"
+send = "Failed sending audio to Wyoming"
+receive = "Lost connection to Wyoming server"
+protocol = "Invalid response from Wyoming server"
+timeout = "Wyoming transcription timed out"
+
+[todo.error]
+invalidColor = "Choose a valid task color."
+invalidSchedule = "Use a valid date and HH:MM time (00:00–23:59), or leave the time empty."
+emptyTitle = "Task title cannot be empty"
+notFound = "Task not found"
+storageRead = "Could not read saved tasks"
+storageWrite = "Could not save tasks"
+storageSerialize = "Could not encode tasks"
+storageCorrupt = "Tasks file was corrupted and backed up"
+
+[shelf.error]
+fullscreenProtected = "Leave full screen before opening a file dialog."
+invalidText = "Enter text without null characters."
+clipboard = "Could not access clipboard text."
+dropTarget = "Could not initialize drag and drop."
+inspectFailed = "Could not inspect file metadata"
+openFailed = "Could not open file or folder"
+pickerFailed = "Could not open file picker"
+storageRead = "Could not read saved shelf items"
+storageWrite = "Could not save shelf items"
+storageSerialize = "Could not encode shelf items"
+storageCorrupt = "Shelf file was corrupted and backed up"
+
+[media.error]
+artworkDownload = "Failed downloading album artwork"
+artworkDecode = "Failed decoding album artwork"
+
+[lyrics.error]
+request = "Failed querying LRCLIB lyrics"
+parse = "Invalid lyrics response from LRCLIB"
+
+[settings.error]
+startup = "Could not update Windows startup registration."
+read = "Could not read settings file"
+write = "Could not save settings file"
+parse = "Invalid settings TOML syntax"
+serialize = "Could not encode settings"
+
+[storage.error]
+appDataMissing = "APPDATA environment variable is missing"
+createDirectory = "Could not create user data directory"
+
+[log.app]
+starting = "Lumi service starting"
+ready = "Lumi UI and background services ready"
+stopping = "Lumi shutting down"
+startupFailed = "Lumi failed to initialize"
+
+[log.controller]
+stopped = "Notch controller event loop stopped"
+
+[log.events]
+receiverClosed = "Application event channel receiver closed"
+
+[log.todo]
+mutationRejected = "Rejected invalid to-do mutation"
+storageFailed = "Failed persisting to-do list"
+quarantineFailed = "Failed quarantining corrupted tasks file"
+
+[log.shelf]
+inspectRejected = "Skipped unreadable or missing dropped file path"
+storageFailed = "Failed persisting file shelf"
+quarantineFailed = "Failed quarantining corrupted file shelf"
+openFailed = "Failed opening shelf item with Windows Shell"
+dragFailed = "Failed starting outbound Windows Shell file drag"
+pickerFailed = "Failed running Windows file picker dialog"
+
+[log.media]
+artworkLoadFailed = "Album artwork request failed"
+lyricsLoadFailed = "Synced lyrics lookup failed"
+
+[log.music]
+sessionConnected = "Connected to Music Assistant server"
+closedByServer = "Music Assistant WebSocket closed by server"
+authenticationFailed = "Music Assistant authentication failed"
+sessionFailed = "Music Assistant session ended with error"
+supervisorStopped = "Music Assistant supervisor channel closed"
+commandIgnoredDisconnected = "Ignored media command while disconnected"
+commandRejected = "Music Assistant rejected command"
+noActiveQueue = "Ignored media command because no queue is active"
+audioPlayerReady = "Local Sendspin audio player connected and ready"
+audioPlayerDisconnected = "Local Sendspin audio player disconnected"
+audioOutputFailed = "Failed opening default Windows audio output device"
+audioStreamError = "Audio output stream reported a playback error"
+queueTransferred = "Transferred Music Assistant playback to local PC speaker"
+
+[log.voice]
+recordingStartFailed = "Failed starting microphone capture"
+recordingStopFailed = "Failed finalizing microphone capture"
+microphoneStreamError = "Microphone audio stream reported an error"
+transcriptionFailed = "Wyoming Whisper transcription failed"
+wyomingEventIgnored = "Ignored intermediate Wyoming protocol event"
+
+[log.power]
+readFailed = "Failed querying Windows power status"
+watcherFailed = "Failed registering Windows power notifications"
+
+[log.headphones]
+watcherFailed = "Failed starting Bluetooth audio device watcher"
+
+[log.window]
+styleFailed = "Failed configuring borderless Win32 overlay styles"
+positionFailed = "Failed updating Win32 overlay window bounds"
+showFailed = "Failed updating Slint window visibility"
+
+[log.tray]
+initFailed = "Failed registering Win32 notification area icon"
+updateFailed = "Failed updating Win32 notification area icon"
+
+[log.settings]
+updated = "Application settings updated"
+saveFailed = "Failed persisting application settings"
+validationFailed = "Rejected invalid settings form values"
+
+[desktopUi]
+water-dose-detail = "{ml} ml each · {sips}/bottle"
+focus-action = "Focus"
+break-action = "Break"
+focus-ready-title = "Focus Time!"
+break-ready-title = "Break Time!"
+focus-ready-detail = "Back to work, {minutes} min"
+break-ready-detail = "Time to rest, {minutes} min"
+water-bottle-short = "Bottle"
+water-goal-short = "Goal"
+water-hours-short = "Hours"
+water-reminders-short = "reminders"
+water-refills-short = "refills"
+short-break-action = "Short Break"
+focus-time = "Focus Time"
+water-reminder-suffix = "Reminder"
+drink-short = "Drink"
+water-next = "Next"
+water-goal-reached = "Goal reached"
+water-plan = "Plan"
+water-bottle = "Bottle size"
+water-from = "Active from"
+water-until = "Active until"
+water-progress-today = "Today's progress"
+water-spread-help = "Spread across your active hours"
+water-daily-goal = "Daily goal"
+todo-empty-short = "No tasks."
+water-settings = "Settings"
+text-copy-help = "Click to copy"
+nav-general = "General"
+nav-mouse-move = "Cursor activity"
+mouse-move-enable = "Keep mouse activity"
+mouse-move-help = "Activity every {seconds} seconds; the pointer stays in place"
+scroll-settings = "Scroll settings down"
+nav-display = "Display"
+nav-appearance = "Appearance"
+nav-music = "Music and lyrics"
+nav-todo = "To-do"
+nav-calendar = "Calendar"
+nav-pomodoro = "Pomodoro"
+nav-water = "Water"
+nav-shelf = "Shelf"
+nav-hud = "HUD & popups"
+nav-about = "About"
+section-startup = "Startup"
+section-notch = "Notch"
+section-sounds = "Sounds"
+section-fullscreen = "Full screen"
+section-motion = "Motion"
+section-preview = "Preview"
+section-options = "Options"
+section-indicators = "Indicators"
+section-popups = "Popups"
+section-reminders = "Reminders"
+section-connection = "Connection"
+start-windows = "Start with Windows"
+size = "Size"
+size-help = "Applies immediately to the notch"
+minimal-help = "A smaller pill when the notch is not in use"
+mascot-help = "Mimo, your little friend in Lumi"
+reminder-sounds = "Reminder sounds"
+sounds-help = "Chimes for Pomodoro, To-do and Water"
+hide-fullscreen = "Hide in full screen"
+fullscreen-help = "Games, videos and slides that fill the screen"
+display-help = "Click a screen to move the notch there"
+primary = "Main"
+auto = "Auto"
+open-notch = "Open the notch"
+hover = "Hover"
+click = "Click"
+page-icons = "Page icons"
+page-icons-help = "Show page icons when you hover the page dots"
+animation-speed = "Animation speed"
+normal = "Normal"
+fast = "Fast"
+show-lyrics = "Show lyrics"
+lyrics-help = "Synced lyrics from LRCLIB in the notch"
+windows-media = "Windows Media"
+source-priority = "Music Assistant takes priority while playing. Otherwise, follow the active Windows media session."
+master-volume = "The speaker slider controls Windows output volume."
+task-start = "When a task starts"
+task-end = "When time is up"
+snooze = "Snooze for"
+task-duration = "Task timer (minutes)"
+week-starts = "Week starts on"
+sunday = "Sunday"
+monday = "Monday"
+default-view = "Default view"
+month = "Month"
+week = "Week"
+empty-shelf = "Start with an empty Shelf"
+empty-shelf-help = "Clears saved cards at startup; original files are kept"
+volume = "Volume"
+brightness = "Brightness"
+caps-lock = "Caps Lock"
+input-language = "Input language"
+battery = "Battery"
+wifi = "Wi-Fi"
+headset = "Bluetooth headset"
+focus-duration = "Focus (minutes)"
+short-break = "Short break (minutes)"
+long-break = "Long break (minutes)"
+focus-cycles = "Focus sessions before a long break"
+water-enable = "Remind me to drink water"
+start = "Start"
+pause = "Pause"
+reset = "Reset"
+snooze-action = "Snooze"
+drink = "Drink a glass"
+today = "Today"
+about-author = "Created by {author}"
+about-mascot = "Mimo, your little companion in Lumi."
+about-description = "A living notch for Windows. Music, notes, files and focused days."
+focus = "Focus"
+break = "Take a break"
+water-reminder = "Time for a glass of water"
+task-ready = "Task timer finished"
+task-due = "Task reminder"
+task-started = "Task started"
+volume-system = "System volume"
+on = "On"
+off = "Off"
+wifi-connected = "Wi-Fi connected"
+wifi-disconnected = "Wi-Fi disconnected"
+shelf-text-button = "+ Text"
+shelf-paste-button = "Paste"
+shelf-text-placeholder = "Write a text card…"
+
+[music.error]
+windowsMedia = "Windows Media is unavailable."
+
+[log.notch]
+backgroundChanged = "Automatic notch resting state changed"
+
+[water.error]
+read = "Cannot read water history."
+parse = "Invalid water history. Original data was kept."
+write = "Could not save your water log."
+
+[mouseMove.error]
+blocked = "Windows could not accept mouse activity. It will retry at the next interval."
+
+[log.mouseMove]
+failed = "Windows did not accept the mouse activity event"

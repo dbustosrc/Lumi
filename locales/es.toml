@@ -1,0 +1,402 @@
+[tray]
+tooltip = "Lumi"
+
+[tray.menu]
+settings = "Configuración..."
+minimalNotch = "Notch minimalista"
+mascot = "Mimo"
+mouseMove = "Actividad del cursor"
+quit = "Salir"
+
+[calendar.weekdays]
+mon = "Lun"
+tue = "Mar"
+wed = "Mié"
+thu = "Jue"
+fri = "Vie"
+sat = "Sáb"
+sun = "Dom"
+
+[calendar.months]
+jan = "Ene"
+feb = "Feb"
+mar = "Mar"
+apr = "Abr"
+may = "May"
+jun = "Jun"
+jul = "Jul"
+aug = "Ago"
+sep = "Sep"
+oct = "Oct"
+nov = "Nov"
+dec = "Dic"
+
+[notch.music]
+idleTitle = "Sin reproducción"
+notConfiguredSubtitle = "Reproduce música en Music Assistant o una app de Windows"
+connectingSubtitle = "Conectando con Music Assistant..."
+authFailedSubtitle = "Autenticación fallida — revisa el token"
+unavailableSubtitle = "Servidor Music Assistant no disponible"
+readySubtitle = "Esperando reproducción"
+
+[notch.lyrics]
+loading = "Buscando letras sincronizadas..."
+notFound = "Sin letras sincronizadas para esta pista"
+unavailable = "Reproduce una pista para ver su letra"
+
+[notch.shelf]
+title = "Estante"
+addButton = "Agregar"
+clearButton = "Limpiar"
+dropTitle = "Suelta archivos aquí"
+releaseTitle = "Suelta para guardar"
+dropSubtitle = "Arrastra fuera cuando quieras · clic para abrir"
+folderLabel = "Carpeta"
+
+[notch.todo]
+daily = "Diaria"
+once = "Una vez"
+titlePrefix = "Lista"
+titleAccent = "Tareas"
+completedToday = "Tareas listas hoy"
+addButton = "Agregar"
+editButton = "Editar"
+doneEditButton = "Listo"
+voiceButton = "Voz"
+voiceRecording = "Parar"
+voiceTranscribing = "Espere..."
+inputPlaceholder = "Escribe una tarea..."
+saveButton = "Guardar"
+cancelButton = "Cancelar"
+emptyHint = "Sin tareas — agrega una o pulsa Voz"
+
+[notch.headphones]
+defaultName = "Audífonos"
+connectedWithBattery = "Conectado · {percent}%"
+connectedNoBattery = "Conectado"
+disconnectedTitle = "Sin audífonos"
+disconnectedSubtitle = "Conecta tus audífonos Bluetooth"
+
+[notch.charging]
+title = "Cargando"
+subtitle = "Cargador conectado"
+onBatteryTitle = "Usando batería"
+onBatterySubtitle = "Funcionando con batería"
+
+[settings.window]
+title = "Lumi — Configuración"
+subtitle = "Configura apariencia, Music Assistant y Wyoming Whisper local"
+
+[settings.general]
+sectionTitle = "General"
+languageLabel = "Idioma"
+languageSystem = "Sistema"
+languageEnglish = "English"
+languageSpanish = "Español"
+minimalNotchLabel = "Notch mínimo"
+mascotLabel = "Mimo"
+restAfterLabel = "Descansar tras inactividad (segundos)"
+lyricsLabel = "Buscar letras sincronizadas (LRCLIB)"
+
+[settings.musicAssistant]
+sectionTitle = "Music Assistant (Fuente local)"
+enabledLabel = "Activar integración con Music Assistant"
+serverUrlLabel = "URL del servidor"
+serverUrlPlaceholder = "http://localhost:8095"
+tokenLabel = "Token de acceso de larga duración"
+tokenPlaceholder = "Pega tu token de Music Assistant"
+queueIdLabel = "ID de reproductor / cola (opcional)"
+queueIdPlaceholder = "Vacío para reproducir localmente en este PC"
+
+[settings.wyoming]
+sectionTitle = "Tareas por voz (Wyoming Whisper local)"
+enabledLabel = "Activar captura de voz con Wyoming Whisper"
+hostLabel = "Host del servidor"
+hostPlaceholder = "localhost"
+portLabel = "Puerto TCP"
+languageLabel = "Idioma de voz (ISO 639-1)"
+languagePlaceholder = "es"
+
+[settings.actions]
+saveButton = "Guardar cambios"
+closeButton = "Cerrar"
+
+[settings.status]
+invalidWater = "Usa una meta y botella positivas, y un horario válido dentro del día."
+invalidConnection = "Indica una URL, un servidor y un idioma válidos para las integraciones activadas."
+saved = "Configuración aplicada y guardada"
+unsaved = "Cambios sin guardar"
+invalidNumber = "Revisa los campos numéricos (puerto y segundos de reposo)"
+
+[voice.error]
+notConfigured = "Activa Wyoming Whisper en Configuración primero"
+emptyTranscript = "No se detectó voz"
+alreadyRecording = "El micrófono ya está grabando"
+notRecording = "No hay grabación activa"
+noMicrophone = "No se detectó micrófono"
+microphone = "Falló el acceso al micrófono"
+unsupportedFormat = "Formato de audio del micrófono no soportado"
+connect = "No se pudo conectar al servidor Wyoming"
+send = "Error al enviar audio a Wyoming"
+receive = "Se perdió la conexión con el servidor Wyoming"
+protocol = "Respuesta inválida del servidor Wyoming"
+timeout = "Tiempo agotado al transcribir con Wyoming"
+
+[todo.error]
+invalidColor = "Selecciona un color de tarea válido."
+invalidSchedule = "Usa una fecha válida y una hora HH:MM (00:00–23:59), o deja la hora vacía."
+emptyTitle = "El título de la tarea no puede estar vacío"
+notFound = "Tarea no encontrada"
+storageRead = "No se pudieron leer las tareas guardadas"
+storageWrite = "No se pudieron guardar las tareas"
+storageSerialize = "No se pudieron codificar las tareas"
+storageCorrupt = "El archivo de tareas estaba dañado y fue respaldado"
+
+[shelf.error]
+fullscreenProtected = "Sal de la pantalla completa antes de abrir el selector de archivos."
+invalidText = "Introduce texto sin caracteres nulos."
+clipboard = "No se pudo acceder al texto del portapapeles."
+dropTarget = "No se pudo iniciar el arrastre de elementos."
+inspectFailed = "No se pudieron leer los metadatos del archivo"
+openFailed = "No se pudo abrir el archivo o carpeta"
+pickerFailed = "No se pudo abrir el selector de archivos"
+storageRead = "No se pudo leer el estante de archivos"
+storageWrite = "No se pudo guardar el estante de archivos"
+storageSerialize = "No se pudo codificar el estante de archivos"
+storageCorrupt = "El archivo del estante estaba dañado y fue respaldado"
+
+[media.error]
+artworkDownload = "Error al descargar la carátula del álbum"
+artworkDecode = "Error al decodificar la carátula del álbum"
+
+[lyrics.error]
+request = "Error al consultar letras en LRCLIB"
+parse = "Respuesta de letras inválida desde LRCLIB"
+
+[settings.error]
+startup = "No se pudo actualizar el inicio con Windows."
+read = "No se pudo leer el archivo de configuración"
+write = "No se pudo guardar el archivo de configuración"
+parse = "Sintaxis TOML inválida en configuración"
+serialize = "No se pudo codificar la configuración"
+
+[storage.error]
+appDataMissing = "Falta la variable de entorno APPDATA"
+createDirectory = "No se pudo crear el directorio de datos"
+
+[log.app]
+starting = "Iniciando servicio Lumi"
+ready = "Interfaz y servicios en segundo plano de Lumi listos"
+stopping = "Cerrando Lumi"
+startupFailed = "Falló la inicialización de Lumi"
+
+[log.controller]
+stopped = "Bucle de eventos del controlador detenido"
+
+[log.events]
+receiverClosed = "Canal receptor de eventos cerrado"
+
+[log.todo]
+mutationRejected = "Mutación de tarea rechazada por validación"
+storageFailed = "Error al persistir la lista de tareas"
+quarantineFailed = "Error al respaldar archivo de tareas dañado"
+
+[log.shelf]
+inspectRejected = "Ruta de archivo omitida por inaccesible o inexistente"
+storageFailed = "Error al persistir el estante de archivos"
+quarantineFailed = "Error al respaldar archivo dañado del estante"
+openFailed = "Error al abrir elemento del estante con Windows Shell"
+dragFailed = "Error al iniciar arrastre saliente de archivo con Windows Shell"
+pickerFailed = "Error al abrir el diálogo selector de archivos de Windows"
+
+[log.media]
+artworkLoadFailed = "Falló la carga de carátula del álbum"
+lyricsLoadFailed = "Falló la búsqueda de letras sincronizadas"
+
+[log.music]
+sessionConnected = "Conectado al servidor Music Assistant"
+closedByServer = "WebSocket de Music Assistant cerrado por el servidor"
+authenticationFailed = "Falló la autenticación con Music Assistant"
+sessionFailed = "La sesión de Music Assistant terminó con error"
+supervisorStopped = "Canal del supervisor de Music Assistant cerrado"
+commandIgnoredDisconnected = "Comando multimedia ignorado por desconexión"
+commandRejected = "Music Assistant rechazó el comando"
+noActiveQueue = "Comando multimedia ignorado sin cola activa"
+audioPlayerReady = "Reproductor local Sendspin conectado y listo"
+audioPlayerDisconnected = "Reproductor local Sendspin desconectado"
+audioOutputFailed = "Error al abrir dispositivo de salida de audio de Windows"
+audioStreamError = "El flujo de salida de audio reportó un error"
+queueTransferred = "Reproducción de Music Assistant transferida al altavoz local del PC"
+
+[log.voice]
+recordingStartFailed = "Error al iniciar captura del micrófono"
+recordingStopFailed = "Error al finalizar captura del micrófono"
+microphoneStreamError = "El flujo del micrófono reportó un error"
+transcriptionFailed = "Falló la transcripción en Wyoming Whisper"
+wyomingEventIgnored = "Evento intermedio de protocolo Wyoming ignorado"
+
+[log.power]
+readFailed = "Error al consultar estado de energía de Windows"
+watcherFailed = "Error al registrar notificaciones de energía de Windows"
+
+[log.headphones]
+watcherFailed = "Error al iniciar monitor de audífonos Bluetooth"
+
+[log.window]
+styleFailed = "Error al configurar estilos Win32 sin bordes del overlay"
+positionFailed = "Error al actualizar dimensiones Win32 del overlay"
+showFailed = "Error al actualizar la visibilidad de la ventana Slint"
+
+[log.tray]
+initFailed = "Error al registrar el icono en la bandeja del sistema Win32"
+updateFailed = "Error al actualizar el icono en la bandeja del sistema Win32"
+
+[log.settings]
+updated = "Configuración de la aplicación actualizada"
+saveFailed = "Error al guardar la configuración de la aplicación"
+validationFailed = "Valores del formulario de configuración rechazados por validación"
+
+[desktopUi]
+water-dose-detail = "{ml} ml · {sips}/botella"
+focus-action = "Enfoque"
+break-action = "Pausa"
+focus-ready-title = "¡A concentrarse!"
+break-ready-title = "¡Descanso!"
+focus-ready-detail = "A trabajar, {minutes} min"
+break-ready-detail = "A descansar, {minutes} min"
+water-bottle-short = "Botella"
+water-goal-short = "Meta"
+water-hours-short = "Horas"
+water-reminders-short = "avisos"
+water-refills-short = "recargas"
+short-break-action = "Descanso"
+focus-time = "Enfoque"
+water-reminder-suffix = "Recordatorio"
+drink-short = "Beber"
+water-next = "Próx."
+water-goal-reached = "Meta alcanzada"
+water-plan = "Plan"
+water-bottle = "Tamaño de botella"
+water-from = "Activa desde"
+water-until = "Activa hasta"
+water-progress-today = "Progreso de hoy"
+water-spread-help = "Distribuidos durante tus horas activas"
+water-daily-goal = "Meta diaria"
+todo-empty-short = "Sin tareas."
+water-settings = "Ajustes"
+text-copy-help = "Haz clic para copiar"
+nav-general = "General"
+nav-mouse-move = "Actividad del cursor"
+mouse-move-enable = "Mantener la actividad del mouse"
+mouse-move-help = "Actividad cada {seconds} segundos, sin desplazar el cursor"
+scroll-settings = "Desplazar configuración hacia abajo"
+nav-display = "Pantalla"
+nav-appearance = "Apariencia"
+nav-music = "Música y letras"
+nav-todo = "Tareas"
+nav-calendar = "Calendario"
+nav-pomodoro = "Pomodoro"
+nav-water = "Agua"
+nav-shelf = "Bandeja"
+nav-hud = "Indicadores y avisos"
+nav-about = "Acerca de"
+section-startup = "Inicio"
+section-notch = "Notch"
+section-sounds = "Sonidos"
+section-fullscreen = "Pantalla completa"
+section-motion = "Movimiento"
+section-preview = "Vista previa"
+section-options = "Opciones"
+section-indicators = "Indicadores"
+section-popups = "Avisos"
+section-reminders = "Recordatorios"
+section-connection = "Conexión"
+start-windows = "Iniciar con Windows"
+size = "Tamaño"
+size-help = "Se aplica al notch al instante"
+minimal-help = "Una marca pequeña cuando no se usa el notch"
+mascot-help = "Mimo, tu pequeño compañero en Lumi"
+reminder-sounds = "Sonidos de recordatorios"
+sounds-help = "Avisos de Pomodoro, tareas y agua"
+hide-fullscreen = "Ocultar en pantalla completa"
+fullscreen-help = "Juegos, vídeos y presentaciones a pantalla completa"
+display-help = "Selecciona una pantalla para mover el notch"
+primary = "Principal"
+auto = "Auto"
+open-notch = "Abrir el notch"
+hover = "Al pasar el cursor"
+click = "Al hacer clic"
+page-icons = "Iconos de las páginas"
+page-icons-help = "Mostrar iconos al pasar el cursor por los puntos"
+animation-speed = "Velocidad de animación"
+normal = "Normal"
+fast = "Rápida"
+show-lyrics = "Mostrar letras"
+lyrics-help = "Letras sincronizadas de LRCLIB en el notch"
+windows-media = "Windows Media"
+source-priority = "Music Assistant tiene prioridad al reproducir. En otro caso se usa la sesión activa de Windows Media."
+master-volume = "El deslizador del altavoz controla el volumen de salida de Windows."
+task-start = "Cuando empieza una tarea"
+task-end = "Cuando termina el tiempo"
+snooze = "Posponer durante"
+task-duration = "Temporizador de tarea (minutos)"
+week-starts = "La semana comienza en"
+sunday = "Domingo"
+monday = "Lunes"
+default-view = "Vista predeterminada"
+month = "Mes"
+week = "Semana"
+empty-shelf = "Iniciar con la bandeja vacía"
+empty-shelf-help = "Vacía las tarjetas al iniciar; conserva los archivos originales"
+volume = "Volumen"
+brightness = "Brillo"
+caps-lock = "Bloq Mayús"
+input-language = "Idioma de entrada"
+battery = "Batería"
+wifi = "Wi-Fi"
+headset = "Auriculares Bluetooth"
+focus-duration = "Concentración (minutos)"
+short-break = "Descanso corto (minutos)"
+long-break = "Descanso largo (minutos)"
+focus-cycles = "Sesiones antes del descanso largo"
+water-enable = "Recordarme beber agua"
+start = "Iniciar"
+pause = "Pausar"
+reset = "Restablecer"
+snooze-action = "Posponer"
+drink = "Registrar un vaso"
+today = "Hoy"
+about-author = "Creado por {author}"
+about-mascot = "Mimo, tu pequeño compañero en Lumi."
+about-description = "Un notch para Windows. Música, notas, archivos y días con enfoque."
+focus = "Concentración"
+break = "Descanso"
+water-reminder = "Hora de beber un vaso de agua"
+task-ready = "Tiempo de tarea terminado"
+task-due = "Recordatorio de tarea"
+task-started = "Tarea iniciada"
+volume-system = "Volumen del sistema"
+on = "Activado"
+off = "Desactivado"
+wifi-connected = "Wi-Fi conectado"
+wifi-disconnected = "Wi-Fi desconectado"
+shelf-text-button = "+ Texto"
+shelf-paste-button = "Pegar"
+shelf-text-placeholder = "Escribe una nota…"
+
+[music.error]
+windowsMedia = "Windows Media no está disponible."
+
+[log.notch]
+backgroundChanged = "Cambió el estado automático de reposo del notch"
+
+[water.error]
+read = "No se puede leer el historial de agua."
+parse = "Historial de agua inválido. Se conservaron los datos originales."
+write = "No se pudo guardar el registro de agua."
+
+[mouseMove.error]
+blocked = "Windows no pudo aceptar la actividad del mouse. Se reintentará en el próximo intervalo."
+
+[log.mouseMove]
+failed = "Windows no aceptó el evento de actividad del mouse"
