@@ -1,4 +1,5 @@
 use super::model::{Rect, UiModel, tr};
+use super::notices::COMPONENTS;
 use super::scene::{Action, Field, Paint, Preference, Scene};
 use super::views;
 use crate::application::settings::{AppSettings, LanguagePreference};
@@ -57,8 +58,15 @@ impl SettingsScrollbar {
         ((y - self.track.y - grab_offset) / travel).clamp(0., 1.) * self.max_scroll
     }
 }
+#[derive(Clone, Copy)]
+pub enum NoticesPage {
+    Index,
+    Component { index: usize, index_scroll: f32 },
+}
+
 pub struct SettingsUi {
     pub section: usize,
+    pub notices: Option<NoticesPage>,
     pub changed: Instant,
     pub scroll: f32,
     pub screen_scroll: f32,
@@ -70,11 +78,16 @@ pub struct SettingsUi {
     pub status: String,
     pub error: bool,
     pub dark: bool,
+    pub api_error: Option<&'static str>,
+    pub api_tokens: Vec<crate::infrastructure::task_tokens::TokenInfo>,
+    pub issued_token: Option<crate::infrastructure::task_tokens::IssuedToken>,
+    pub api_notice: Option<(&'static str, bool)>,
 }
 impl SettingsUi {
     pub fn new(settings: &AppSettings, dark: bool) -> Self {
         let mut ui = Self {
             section: 0,
+            notices: None,
             changed: Instant::now(),
             scroll: 0.,
             screen_scroll: 0.,
@@ -86,6 +99,10 @@ impl SettingsUi {
             status: String::new(),
             error: false,
             dark,
+            api_error: Some("taskApi.error.listen"),
+            api_tokens: Vec::new(),
+            issued_token: None,
+            api_notice: None,
         };
         ui.load_drafts(settings);
         ui
@@ -483,6 +500,132 @@ impl Form<'_> {
         );
         self.y += 42.;
     }
+
+    fn notices(&mut self, page: NoticesPage, content: Rect) {
+        match page {
+            NoticesPage::Index => {
+                let row_height = 42.;
+                for (index, component) in COMPONENTS.iter().enumerate() {
+                    let row = Rect::new(self.x, self.y, self.width, row_height - 4.);
+                    self.y += row_height;
+                    if row.y + row.h <= content.y || row.y >= content.y + content.h {
+                        continue;
+                    }
+                    let title = format!("{} {}", component.name, component.version);
+                    self.scene.round(row, 7., self.card);
+                    self.scene.text(
+                        Rect::new(row.x + 10., row.y + 2., row.w - 20., 18.),
+                        &title,
+                        12.,
+                        self.ink,
+                        true,
+                        false,
+                    );
+                    self.scene.text(
+                        Rect::new(row.x + 10., row.y + 19., row.w - 20., 16.),
+                        component.license,
+                        10.,
+                        self.dim,
+                        false,
+                        false,
+                    );
+                    self.scene.hit(
+                        row,
+                        Action::OpenNotice(index),
+                        format!("{title} · {}", component.license),
+                    );
+                }
+            }
+            NoticesPage::Component { index, .. } => {
+                let component = &COMPONENTS[index];
+                let title = format!("{} {}", component.name, component.version);
+                self.scene.text(
+                    Rect::new(self.x, self.y, self.width, 25.),
+                    &title,
+                    15.,
+                    self.ink,
+                    true,
+                    false,
+                );
+                self.y += 25.;
+                self.text(component.license);
+                let reader = Rect::new(
+                    self.x,
+                    self.y,
+                    self.width,
+                    content.y + content.h - self.y - 8.,
+                );
+                self.scene.round(reader, 7., 0x333336);
+                self.scene.input(
+                    Field::ThirdPartyNotice(index),
+                    reader.inset(7.),
+                    component.text,
+                    false,
+                    true,
+                    &title,
+                );
+            }
+        }
+    }
+
+    fn task_api(&mut self) {
+        self.heading("task-api");
+        if let Some(error) = self.ui.api_error {
+            self.text(&crate::i18n::translate(error));
+            return;
+        }
+        self.text(&format!(
+            "http://{}",
+            crate::infrastructure::task_api::ADDRESS
+        ));
+        let (key, action) = if self.ui.issued_token.is_some() {
+            ("task-api-copy", Action::CopyTaskToken)
+        } else {
+            ("task-api-generate", Action::GenerateTaskToken)
+        };
+        self.scene.button(
+            Rect::new(self.x + 14., self.y, self.width - 28., 28.),
+            tr(key),
+            "",
+            action,
+            0x343437,
+        );
+        self.y += 34.;
+        if let Some((key, error)) = self.ui.api_notice {
+            self.scene.paint.push(Paint::Paragraph(
+                Rect::new(self.x + 14., self.y, self.width - 28., 31.),
+                crate::i18n::translate(key),
+                10.,
+                if error { 0xff9292 } else { self.dim },
+            ));
+            self.y += 36.;
+        }
+        for token in &self.ui.api_tokens {
+            let id = token.id.simple().to_string();
+            let date = token
+                .created_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d");
+            self.separator();
+            self.scene.text(
+                Rect::new(self.x + 14., self.y, self.width - 128., 36.),
+                format!("Token {} · {date}", &id[..8]),
+                11.,
+                self.ink,
+                false,
+                false,
+            );
+            self.scene.button(
+                Rect::new(self.x + self.width - 102., self.y + 6., 88., 24.),
+                tr("task-api-revoke"),
+                "",
+                Action::RevokeTaskToken(token.id),
+                0x493134,
+            );
+            self.y += 36.;
+        }
+        self.y += 6.;
+    }
 }
 pub fn settings_scene(
     m: &UiModel,
@@ -554,9 +697,21 @@ pub fn settings_scene(
         );
         scene.hit(row, Action::Section(i), tr(label));
     }
+    let (title, header_space) = if ui.notices.is_some() {
+        scene.button(
+            Rect::new(width - 119., 20., 96., 25.),
+            tr("about-notices-back"),
+            "",
+            Action::BackNotices,
+            0x343437,
+        );
+        (tr("about-third-party"), 108.)
+    } else {
+        (tr(SECTIONS[ui.section]), 0.)
+    };
     scene.text(
-        Rect::new(214., 19., width - 238., 27.),
-        tr(SECTIONS[ui.section]),
+        Rect::new(214., 19., width - 238. - header_space, 27.),
+        title,
         18.,
         ink,
         true,
@@ -768,6 +923,7 @@ pub fn settings_scene(
                 ],
             );
             f.number(P::TaskMinutes, &tr("task-duration"), 1);
+            f.task_api();
             f.heading("section-connection");
             f.toggle(
                 P::VoiceEnabled,
@@ -958,6 +1114,7 @@ pub fn settings_scene(
                 f.y += 70.;
             }
         }
+        10 if ui.notices.is_some() => f.notices(ui.notices.unwrap(), content),
         _ => {
             let icon = crate::adapters::branding::app_icon();
             f.scene.paint.push(Paint::Bitmap(
@@ -991,6 +1148,14 @@ pub fn settings_scene(
             ));
             f.text(env!("CARGO_PKG_REPOSITORY"));
             f.text(env!("CARGO_PKG_LICENSE"));
+            f.scene.button(
+                Rect::new(f.x + 8., f.y, f.width - 16., 28.),
+                tr("about-third-party"),
+                "",
+                Action::OpenNotices,
+                0x343437,
+            );
+            f.y += 34.;
         }
     }
     f.finish_group();
@@ -1000,7 +1165,14 @@ pub fn settings_scene(
     scene.hits.retain(|hit| {
         !matches!(
             hit.action,
-            Action::Preference(..) | Action::Display(..) | Action::SelectDate(..)
+            Action::Preference(..)
+                | Action::Display(..)
+                | Action::SelectDate(..)
+                | Action::GenerateTaskToken
+                | Action::CopyTaskToken
+                | Action::RevokeTaskToken(_)
+                | Action::OpenNotices
+                | Action::OpenNotice(_)
         ) || hit.rect.y >= content.y && hit.rect.y + hit.rect.h <= content.y + content.h
     });
     scene.inputs.retain(|input| {

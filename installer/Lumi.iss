@@ -27,7 +27,6 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 [Files]
 Source: "{#LumiBinary}"; DestDir: "{app}"; DestName: "lumi.exe"; Flags: ignoreversion
 Source: "{#ProjectDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#ProjectDir}\third-party-licenses\*"; DestDir: "{app}\third-party-licenses"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 Name: "{userprograms}\Lumi"; Filename: "{app}\lumi.exe"

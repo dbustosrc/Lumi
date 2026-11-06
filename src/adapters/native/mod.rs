@@ -4,6 +4,7 @@ pub mod host;
 pub mod icons;
 pub mod input;
 pub mod model;
+mod notices;
 pub mod presenter;
 pub mod scene;
 pub mod settings;

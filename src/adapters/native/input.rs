@@ -21,6 +21,7 @@ pub const EDIT_BACKGROUNDS: [u32; 4] = [0x080909, 0x242729, 0x212124, 0x333336];
 pub const WM_EDIT_COMMIT: u32 = WM_APP + 0x13;
 pub const WM_EDIT_CANCEL: u32 = WM_APP + 0x14;
 pub const WM_EDIT_TAB: u32 = WM_APP + 0x15;
+const READ_ONLY_EDIT: usize = 2;
 
 pub fn paint_background(dc: HDC, hwnd: HWND) -> Option<usize> {
     let style = unsafe { GetPropW(hwnd, EDIT_STYLE_PROPERTY).0 as usize };
@@ -85,16 +86,22 @@ impl Inputs {
             }
             let mut first_new = None;
             for input in inputs {
+                let read_only = matches!(input.key, Field::ThirdPartyNotice(_));
                 if !self.entries.contains_key(&input.key) {
                     self.next_id += 1;
                     let style = WS_CHILD
                         | WS_VISIBLE
                         | WS_TABSTOP
-                        | WINDOW_STYLE(ES_AUTOHSCROLL as u32)
-                        | if input.multiline {
-                            WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32)
+                        | if read_only {
+                            WS_VSCROLL
+                                | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY) as u32)
+                        } else if input.multiline {
+                            WINDOW_STYLE(
+                                (ES_AUTOHSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN)
+                                    as u32,
+                            )
                         } else {
-                            WINDOW_STYLE(0)
+                            WINDOW_STYLE(ES_AUTOHSCROLL as u32)
                         }
                         | if input.secret {
                             WINDOW_STYLE(ES_PASSWORD as u32)
@@ -123,9 +130,12 @@ impl Inputs {
                         let _ = DestroyWindow(hwnd);
                         return Err(error);
                     }
-                    if !SetWindowSubclass(hwnd, Some(edit_proc), 1, usize::from(input.multiline))
-                        .as_bool()
-                    {
+                    let mode = if read_only {
+                        READ_ONLY_EDIT
+                    } else {
+                        usize::from(input.multiline)
+                    };
+                    if !SetWindowSubclass(hwnd, Some(edit_proc), 1, mode).as_bool() {
                         let _ = DestroyWindow(hwnd);
                         return Err(windows::core::Error::from_thread());
                     }
@@ -204,7 +214,8 @@ impl Inputs {
                     (r.h * scale).ceil() as i32,
                     SWP_NOACTIVATE | SWP_NOZORDER,
                 )?;
-                if windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() != entry.hwnd
+                if !read_only
+                    && windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() != entry.hwnd
                     && read_text(entry.hwnd) != input.text
                 {
                     let text: Vec<_> = input.text.encode_utf16().chain(Some(0)).collect();
@@ -248,6 +259,7 @@ impl Inputs {
     pub fn collect(&self) -> Vec<(Field, String)> {
         self.entries
             .iter()
+            .filter(|(key, _)| !matches!(key, Field::ThirdPartyNotice(_)))
             .map(|(key, e)| (*key, read_text(e.hwnd)))
             .collect()
     }
@@ -321,7 +333,8 @@ unsafe extern "system" fn edit_proc(
                 );
                 return LRESULT(0);
             }
-            if wparam.0 == VK_RETURN.0 as usize
+            if data != READ_ONLY_EDIT
+                && wparam.0 == VK_RETURN.0 as usize
                 && (data == 0 || GetKeyState(VK_CONTROL.0 as i32) < 0)
             {
                 let _ = PostMessageW(
@@ -333,7 +346,7 @@ unsafe extern "system" fn edit_proc(
                 return LRESULT(0);
             }
         }
-        if msg == WM_KILLFOCUS {
+        if data != READ_ONLY_EDIT && msg == WM_KILLFOCUS {
             if let Ok(parent) = GetParent(hwnd) {
                 let _ = PostMessageW(
                     Some(parent),

@@ -257,6 +257,10 @@ saveFailed = "Error al guardar la configuración de la aplicación"
 validationFailed = "Valores del formulario de configuración rechazados por validación"
 
 [desktopUi]
+task-api = "API de tareas"
+task-api-generate = "Generar token de acceso"
+task-api-copy = "Copiar token nuevo"
+task-api-revoke = "Revocar"
 water-dose-detail = "{ml} ml · {sips}/botella"
 focus-action = "Enfoque"
 break-action = "Pausa"
@@ -369,6 +373,8 @@ today = "Hoy"
 about-author = "Creado por {author}"
 about-mascot = "Mimo, tu pequeño compañero en Lumi."
 about-description = "Un notch para Windows. Música, notas, archivos y días con enfoque."
+about-third-party = "Licencias de terceros"
+about-notices-back = "Volver"
 focus = "Concentración"
 break = "Descanso"
 water-reminder = "Hora de beber un vaso de agua"
@@ -400,3 +406,17 @@ blocked = "Windows no pudo aceptar la actividad del mouse. Se reintentará en el
 
 [log.mouseMove]
 failed = "Windows no aceptó el evento de actividad del mouse"
+
+[taskApi.status]
+generated = "Token creado. Cópialo ahora; no podrás recuperarlo después."
+copied = "Token copiado. Guárdalo en tu aplicación externa."
+revoked = "Token revocado."
+
+[taskApi.error]
+storage = "No se pudieron leer o guardar los tokens de acceso."
+random = "No se pudo generar un token seguro."
+clipboard = "No se pudo copiar el token. Inténtalo de nuevo."
+listen = "API local no disponible. Comprueba que el puerto 17642 esté libre."
+
+[log.taskApi]
+unavailable = "API local de tareas no disponible"

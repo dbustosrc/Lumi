@@ -133,6 +133,16 @@ impl NotchController {
 
     fn handle_event(&mut self, event: AppEvent) {
         match event {
+            AppEvent::TaskApi { command, reply } => {
+                if !reply.is_closed() {
+                    let mutation = command.is_mutation();
+                    let result = self.services.todo.execute(command);
+                    if mutation {
+                        self.after_todo_mutation(&result);
+                    }
+                    let _ = reply.send(result);
+                }
+            }
             AppEvent::MouseMoveStatus(error) => {
                 self.presenter.apply(ViewUpdate::MouseMoveStatus(error))
             }
@@ -474,16 +484,16 @@ impl NotchController {
             _ => return,
         };
         let error_key = result.as_ref().err().map(TodoServiceError::message_key);
-        self.after_todo_mutation(result);
+        self.after_todo_mutation(&result);
         if is_editor_save || error_key.is_some() {
             self.presenter
                 .apply(ViewUpdate::TodoEditorResult { error_key });
         }
     }
 
-    fn after_todo_mutation(&mut self, result: Result<(), TodoServiceError>) {
+    fn after_todo_mutation<T>(&mut self, result: &Result<T, TodoServiceError>) {
         match result {
-            Ok(()) => self.publish_tasks(),
+            Ok(_) => self.publish_tasks(),
             Err(TodoServiceError::Rule(error)) => {
                 tracing::warn!(event = "log.todo.mutationRejected", reason = %error);
             }
@@ -553,7 +563,7 @@ impl NotchController {
         if let Some(text) = self.services.voice.on_transcribed(result) {
             let added = self.services.todo.add(&text);
             let error_key = added.as_ref().err().map(TodoServiceError::message_key);
-            self.after_todo_mutation(added);
+            self.after_todo_mutation(&added);
             if let Some(error_key) = error_key {
                 self.context.page = NotchPage::Todo;
                 self.presenter

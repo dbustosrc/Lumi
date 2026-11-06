@@ -11,7 +11,9 @@ pub mod settings_store;
 pub mod shelf_platform;
 pub mod shelf_store;
 pub mod startup;
+pub mod task_api;
 pub mod task_store;
+pub mod task_tokens;
 pub mod water_store;
 pub mod wyoming;
 

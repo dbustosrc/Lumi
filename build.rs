@@ -1,4 +1,74 @@
-use std::{env, fs, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeSet,
+    env,
+    fmt::Write,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+fn embed_third_party_notices(root: &Path, out: &Path) {
+    let notices = root.join("third-party-licenses");
+    println!("cargo:rerun-if-changed={}", notices.display());
+    let mut directories: BTreeSet<_> = fs::read_dir(&notices)
+        .expect("read the third-party notices directory")
+        .map(|entry| entry.expect("read third-party directory entry").path())
+        .filter(|path| path.is_dir())
+        .collect();
+    let index = fs::read_to_string(notices.join("README.md")).expect("read third-party index");
+    let mut source = String::from("pub(super) static COMPONENTS: &[Component] = &[\n");
+    let mut count = 0;
+    for row in index.lines().filter(|line| line.starts_with('|')).skip(2) {
+        let columns: Vec<_> = row.trim_matches('|').split('|').map(str::trim).collect();
+        let [name, version, license, _] = columns.as_slice() else {
+            panic!("invalid row in third-party index: {row}");
+        };
+        let directory = notices.join(format!("{name}-{version}"));
+        assert!(
+            directories.remove(&directory),
+            "missing or duplicate notice directory: {}",
+            directory.display()
+        );
+        let mut text = String::new();
+        append_notice_files(&directory, &directory, &mut text);
+        assert!(
+            !text.is_empty(),
+            "empty notice directory: {}",
+            directory.display()
+        );
+        let text = text.replace("\r\n", "\n").replace('\n', "\r\n");
+        writeln!(source, "    Component {{ name: {name:?}, version: {version:?}, license: {license:?}, text: {text:?} }},").unwrap();
+        count += 1;
+    }
+    assert!(
+        count > 0 && directories.is_empty(),
+        "third-party index omits notice directories: {directories:?}"
+    );
+    source.push_str("];\n");
+    fs::write(out.join("third_party.rs"), source).expect("embed third-party notices");
+}
+
+fn append_notice_files(root: &Path, directory: &Path, text: &mut String) {
+    let mut entries: Vec<_> = fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
+        .map(|entry| entry.expect("read notice file entry").path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            append_notice_files(root, &path, text);
+        } else {
+            let content = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            writeln!(
+                text,
+                "===== {} =====\n\n{content}\n",
+                path.strip_prefix(root).unwrap().display()
+            )
+            .unwrap();
+        }
+    }
+}
 
 fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
@@ -11,6 +81,7 @@ fn main() {
     let author = env::var("CARGO_PKG_AUTHORS").unwrap();
     let numeric = version.replace('.', ",") + ",0";
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    embed_third_party_notices(&root, &out);
     let source = out.join("lumi.rc");
     let resource = out.join("lumi.res");
     fs::write(

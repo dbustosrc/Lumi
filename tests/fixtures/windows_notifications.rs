@@ -18,6 +18,12 @@ fn toast_opened_requires_only_cached_shell_metadata() {
         "Windows.UI.Core.CoreWindow",
         "ToastView_3"
     ));
+    assert!(matches_toast_metadata(
+        UIA_Window_WindowOpenedEventId,
+        UIA_WindowControlTypeId,
+        "FlexibleToastView",
+        "NormalToastView"
+    ));
 
     assert!(!matches_toast_metadata(
         UIA_SystemAlertEventId,

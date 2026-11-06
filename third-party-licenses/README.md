@@ -46,6 +46,7 @@ Dependency license texts for the locked Windows x64 dependency graph. Package na
 | http-body | 1.1.0 | MIT | [1 files](http-body-1.1.0/) |
 | http-body-util | 0.1.5 | MIT | [1 files](http-body-util-0.1.5/) |
 | httparse | 1.10.1 | MIT OR Apache-2.0 | [2 files](httparse-1.10.1/) |
+| httpdate | 1.0.3 | MIT OR Apache-2.0 | [2 files](httpdate-1.0.3/) |
 | hybrid-array | 0.4.15 | MIT OR Apache-2.0 | [2 files](hybrid-array-0.4.15/) |
 | hyper | 1.12.0 | MIT | [1 files](hyper-1.12.0/) |
 | hyper-tls | 0.6.0 | MIT/Apache-2.0 | [2 files](hyper-tls-0.6.0/) |
@@ -103,6 +104,7 @@ Dependency license texts for the locked Windows x64 dependency graph. Package na
 | serde_spanned | 1.1.2 | MIT OR Apache-2.0 | [2 files](serde_spanned-1.1.2/) |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 | [2 files](serde_urlencoded-0.7.1/) |
 | sha1 | 0.11.0 | MIT OR Apache-2.0 | [2 files](sha1-0.11.0/) |
+| sha2 | 0.11.1 | MIT OR Apache-2.0 | [2 files](sha2-0.11.1/) |
 | sharded-slab | 0.1.7 | MIT | [1 files](sharded-slab-0.1.7/) |
 | shlex | 2.0.1 | MIT OR Apache-2.0 | [2 files](shlex-2.0.1/) |
 | simd-adler32 | 0.3.10 | MIT | [1 files](simd-adler32-0.3.10/) |
@@ -110,6 +112,7 @@ Dependency license texts for the locked Windows x64 dependency graph. Package na
 | smallvec | 1.16.4 | MIT OR Apache-2.0 | [2 files](smallvec-1.16.4/) |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 | [2 files](socket2-0.6.5/) |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | [2 files](stable_deref_trait-1.2.1/) |
+| subtle | 2.6.1 | BSD-3-Clause | [1 files](subtle-2.6.1/) |
 | symlink | 0.1.0 | MIT/Apache-2.0 | [3 files](symlink-0.1.0/) |
 | syn | 2.0.119 | MIT OR Apache-2.0 | [2 files](syn-2.0.119/) |
 | syn | 3.0.9 | MIT OR Apache-2.0 | [2 files](syn-3.0.9/) |

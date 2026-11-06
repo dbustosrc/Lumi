@@ -31,6 +31,7 @@ use crate::application::presenter::ViewUpdate;
 use crate::application::settings::SettingsService;
 use crate::domain::background::{BackgroundDetection, BackgroundObservation};
 use crate::domain::notch::NotchView;
+use crate::infrastructure::task_tokens::TaskTokens;
 use crate::infrastructure::windows::system_tray::{
     TrayActionHandler, TrayMenuAction, TrayMenuChecks, TrayMenuLabels, Win32SystemTray,
 };
@@ -105,6 +106,7 @@ pub struct NativeHost {
     pub presenter: Arc<NativePresenter>,
     events: EventSender,
     settings: Arc<SettingsService>,
+    task_tokens: Option<Arc<TaskTokens>>,
     system_locale: Option<String>,
     notch: HWND,
     settings_window: HWND,
@@ -150,6 +152,7 @@ impl NativeHost {
         settings: Arc<SettingsService>,
         events: EventSender,
         system_locale: Option<String>,
+        task_tokens: std::result::Result<Arc<TaskTokens>, &'static str>,
     ) -> Result<Self> {
         unsafe {
             SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?;
@@ -195,7 +198,14 @@ impl NativeHost {
             });
             let current = settings.current();
             let model = UiModel::new(current.clone());
-            let form = SettingsUi::new(&current, true);
+            let mut form = SettingsUi::new(&current, true);
+            match &task_tokens {
+                Ok(tokens) => {
+                    form.api_error = None;
+                    form.api_tokens = tokens.list();
+                }
+                Err(key) => form.api_error = Some(key),
+            }
             let displays = enumerate_displays()?;
             let graphics = GraphicsDevice::new()?;
             let surface = Surface::new(
@@ -241,6 +251,7 @@ impl NativeHost {
                 presenter,
                 events,
                 settings,
+                task_tokens: task_tokens.ok(),
                 system_locale,
                 notch,
                 settings_window: HWND::default(),
@@ -899,11 +910,35 @@ impl NativeHost {
             Action::Intent(intent) => self.intent(intent),
             Action::Settings => self.open_settings()?,
             Action::CloseSettings => self.hide_settings(),
+            Action::GenerateTaskToken | Action::CopyTaskToken | Action::RevokeTaskToken(_) => {
+                self.task_token_action(action);
+            }
             Action::Section(section) => {
                 self.collect_fields(self.settings_window);
                 self.form.section = section;
+                self.form.notices = None;
                 self.form.changed = Instant::now();
                 self.form.scroll = 0.;
+                self.settings_dirty = true;
+            }
+            Action::OpenNotices | Action::OpenNotice(_) | Action::BackNotices => {
+                use settings::NoticesPage;
+                (self.form.notices, self.form.scroll) = match (action, self.form.notices) {
+                    (Action::OpenNotices, None) => (Some(NoticesPage::Index), 0.),
+                    (Action::OpenNotice(index), Some(NoticesPage::Index)) => (
+                        Some(NoticesPage::Component {
+                            index,
+                            index_scroll: self.form.scroll,
+                        }),
+                        0.,
+                    ),
+                    (Action::BackNotices, Some(NoticesPage::Component { index_scroll, .. })) => {
+                        (Some(NoticesPage::Index), index_scroll)
+                    }
+                    (Action::BackNotices, Some(NoticesPage::Index)) => (None, 0.),
+                    _ => return Ok(()),
+                };
+                self.form.changed = Instant::now();
                 self.settings_dirty = true;
             }
             Action::Preference(key, value) => self.save_preference(key, value)?,
@@ -1126,6 +1161,53 @@ impl NativeHost {
             }
         }
     }
+    fn task_token_action(&mut self, action: Action) {
+        let Some(tokens) = &self.task_tokens else {
+            return;
+        };
+        let result = match action {
+            Action::GenerateTaskToken if self.form.issued_token.is_none() => {
+                tokens.generate().map(|token| {
+                    self.form.issued_token = Some(token);
+                    "taskApi.status.generated"
+                })
+            }
+            Action::CopyTaskToken => {
+                let Some(token) = &self.form.issued_token else {
+                    return;
+                };
+                shelf_text::copy_text(&token.secret)
+                    .map(|()| {
+                        self.form.issued_token = None;
+                        "taskApi.status.copied"
+                    })
+                    .map_err(|_| {
+                        crate::domain::ports::PortError::new(
+                            "taskApi.error.clipboard",
+                            "could not copy token",
+                        )
+                    })
+            }
+            Action::RevokeTaskToken(id) => tokens.revoke(id).map(|()| {
+                if self
+                    .form
+                    .issued_token
+                    .as_ref()
+                    .is_some_and(|token| token.id == id)
+                {
+                    self.form.issued_token = None;
+                }
+                "taskApi.status.revoked"
+            }),
+            _ => return,
+        };
+        self.form.api_tokens = tokens.list();
+        self.form.api_notice = Some(match result {
+            Ok(key) => (key, false),
+            Err(error) => (error.key, true),
+        });
+        self.settings_dirty = true;
+    }
     fn save_settings(&mut self, next: crate::application::settings::AppSettings) -> Result<()> {
         match self.settings.update(next) {
             Ok(()) => {
@@ -1229,6 +1311,8 @@ impl NativeHost {
         }
     }
     fn hide_settings(&mut self) {
+        self.form.issued_token = None;
+        self.form.api_notice = None;
         self.collect_fields(self.settings_window);
         self.settings_visible = false;
         if let Some(access) = &self.settings_access {

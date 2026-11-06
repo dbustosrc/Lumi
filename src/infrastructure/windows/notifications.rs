@@ -122,7 +122,7 @@ fn matches_toast_metadata(
 ) -> bool {
     event_id == UIA_Window_WindowOpenedEventId
         && kind == UIA_WindowControlTypeId
-        && class == "Windows.UI.Core.CoreWindow"
+        && matches!(class, "Windows.UI.Core.CoreWindow" | "FlexibleToastView")
         && id.contains("ToastView")
 }
 

@@ -18,6 +18,7 @@ pub enum Field {
     VoiceHost,
     VoicePort,
     VoiceLanguage,
+    ThirdPartyNotice(usize),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Preference {
@@ -66,9 +67,15 @@ pub enum Action {
     Settings,
     CloseSettings,
     Section(usize),
+    OpenNotices,
+    OpenNotice(usize),
+    BackNotices,
     Preference(Preference, i32),
     Display(String),
     SaveSettings,
+    GenerateTaskToken,
+    CopyTaskToken,
+    RevokeTaskToken(Uuid),
     ScrollSettings,
     Calendar,
     SelectDate(String),

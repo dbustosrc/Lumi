@@ -75,13 +75,38 @@ fn run_application(data_dir: &Path, system_locale: Option<String>) -> Result<(),
     let settings = load_settings_service(data_dir, system_locale.as_deref())?;
     let runtime = build_async_runtime()?;
     let (event_tx, event_rx) = create_event_channel();
-    let host = NativeHost::new(Arc::clone(&settings), event_tx.clone(), system_locale)?;
+    let task_tokens = start_task_api(&runtime, data_dir, event_tx.clone()).map_err(|error| {
+        tracing::warn!(event = "log.taskApi.unavailable", reason = error.key);
+        error.key
+    });
+    let host = NativeHost::new(
+        Arc::clone(&settings),
+        event_tx.clone(),
+        system_locale,
+        task_tokens,
+    )?;
     let presenter: Arc<dyn NotchPresenter> = host.presenter.clone();
     let _watchers =
         spawn_background_services(&runtime, data_dir, &settings, presenter, event_tx, event_rx)?;
     tracing::info!(event = "log.app.ready");
     host.run()?;
     Ok(())
+}
+
+fn start_task_api(
+    runtime: &tokio::runtime::Runtime,
+    data_dir: &Path,
+    events: EventSender,
+) -> Result<Arc<infrastructure::task_tokens::TaskTokens>, PortError> {
+    use infrastructure::{task_api, task_tokens::TaskTokens};
+    let tokens = Arc::new(TaskTokens::load(data_dir.join("task-api-tokens.json"))?);
+    let bind_error = |error| PortError::new("taskApi.error.listen", error);
+    let listener = std::net::TcpListener::bind(task_api::ADDRESS).map_err(bind_error)?;
+    listener.set_nonblocking(true).map_err(bind_error)?;
+    let _enter = runtime.enter();
+    let listener = tokio::net::TcpListener::from_std(listener).map_err(bind_error)?;
+    runtime.spawn(task_api::serve(listener, tokens.clone(), events));
+    Ok(tokens)
 }
 fn load_settings_service(
     data_dir: &Path,

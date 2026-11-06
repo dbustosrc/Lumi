@@ -257,6 +257,10 @@ saveFailed = "Failed persisting application settings"
 validationFailed = "Rejected invalid settings form values"
 
 [desktopUi]
+task-api = "Task API"
+task-api-generate = "Generate access token"
+task-api-copy = "Copy new token"
+task-api-revoke = "Revoke"
 water-dose-detail = "{ml} ml each · {sips}/bottle"
 focus-action = "Focus"
 break-action = "Break"
@@ -369,6 +373,8 @@ today = "Today"
 about-author = "Created by {author}"
 about-mascot = "Mimo, your little companion in Lumi."
 about-description = "A living notch for Windows. Music, notes, files and focused days."
+about-third-party = "Third-party licenses"
+about-notices-back = "Back"
 focus = "Focus"
 break = "Take a break"
 water-reminder = "Time for a glass of water"
@@ -400,3 +406,17 @@ blocked = "Windows could not accept mouse activity. It will retry at the next in
 
 [log.mouseMove]
 failed = "Windows did not accept the mouse activity event"
+
+[taskApi.status]
+generated = "Token created. Copy it now; it cannot be recovered later."
+copied = "Token copied. Save it in your external app."
+revoked = "Token revoked."
+
+[taskApi.error]
+storage = "Could not save or read access tokens."
+random = "Could not generate a secure token."
+clipboard = "Could not copy the token. Try again."
+listen = "Local API unavailable. Check that port 17642 is free."
+
+[log.taskApi]
+unavailable = "Local task API unavailable"

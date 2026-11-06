@@ -53,6 +53,13 @@ function Remove-GeneratedPath([string]$Root, [string]$Path) {
     Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop
 }
 
+function Clear-GeneratedDirectory([string]$Path, [string[]]$Keep) {
+    $directory = Assert-OwnedPath $projectRoot $Path
+    foreach ($entry in Get-ChildItem -LiteralPath $directory -Force) {
+        if ($entry.FullName -notin $Keep) { Remove-GeneratedPath $projectRoot $entry.FullName }
+    }
+}
+
 $manifest = Join-Path $projectRoot 'Cargo.toml'
 if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw "No existe $manifest" }
 $cargo = (Get-Command cargo -CommandType Application -ErrorAction Stop).Source
@@ -68,7 +75,7 @@ if ([string]::IsNullOrWhiteSpace($env:APPDATA)) { throw 'APPDATA no está defini
 $data = Join-Path $env:APPDATA 'Lumi'
 $logs = Assert-OwnedPath $data (Join-Path $data 'logs')
 $action = "Compilar Lumi y limpiar los archivos generados y logs"
-if ($Installer) { $action += ', incluido el instalador' }
+if ($Installer) { $action += ', generar el instalador y reemplazar las distribuciones anteriores de dist' }
 if (-not $PSCmdlet.ShouldProcess(
     $projectRoot,
     $action
@@ -112,7 +119,7 @@ try {
     }
 
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
-    Write-Host 'Compilando Lumi en release...'
+    Write-Host "Compilando Lumi en release desde $projectRoot..."
     $artifacts = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $cargoTemporary = Join-Path $stage '.tmp'
     New-Item -ItemType Directory -Path $cargoTemporary -Force | Out-Null
@@ -163,26 +170,34 @@ try {
     }
 
     New-Item -ItemType Directory -Path $release -Force | Out-Null
-    if (Test-Path -LiteralPath $executable -PathType Leaf) {
+    $hadExecutable = Test-Path -LiteralPath $executable -PathType Leaf
+    if ($hadExecutable) {
         Remove-GeneratedPath $projectRoot $backup
         [IO.File]::Replace($built, $executable, $backup)
     } else {
         [IO.File]::Move($built, $executable)
     }
-    $published = $true
     if ($Installer) {
-        [IO.File]::Move($stagedInstaller, $publishedInstaller, $true)
+        try {
+            [IO.File]::Move($stagedInstaller, $publishedInstaller, $true)
+        }
+        catch {
+            if ($hadExecutable) {
+                [IO.File]::Move($backup, $executable, $true)
+            } else {
+                Remove-GeneratedPath $projectRoot $executable
+            }
+            throw
+        }
         Write-Host "Instalador listo: $publishedInstaller"
     }
+    $published = $true
 
     Write-Host 'Build generada. Eliminando artefactos anteriores y temporales...'
-    foreach ($entry in Get-ChildItem -LiteralPath $target -Force) {
-        if ($entry.FullName -ne $release) { Remove-GeneratedPath $projectRoot $entry.FullName }
-    }
-    foreach ($entry in Get-ChildItem -LiteralPath $release -Force) {
-        if ($entry.FullName -ne $executable) { Remove-GeneratedPath $projectRoot $entry.FullName }
-    }
-    Remove-GeneratedPath $projectRoot $temporary
+    Clear-GeneratedDirectory $target @($release)
+    Clear-GeneratedDirectory $release @($executable)
+    if ($Installer) { Clear-GeneratedDirectory $dist @($publishedInstaller) }
+    Clear-GeneratedDirectory $work @($stage, $backup, $lockPath)
     Remove-GeneratedPath $data $logs
 }
 catch {
@@ -191,7 +206,7 @@ catch {
 finally {
     try {
         # El ejecutable publicado nunca se borra durante la limpieza de un intento fallido.
-        $cleanupPaths = @($stage)
+        $cleanupPaths = @($stage, $temporary)
         if ($published) { $cleanupPaths += $backup }
         foreach ($path in $cleanupPaths) {
             try { Remove-GeneratedPath $projectRoot $path }
@@ -221,4 +236,9 @@ if ($null -ne $failure) {
     if ($published) { Write-Warning "La nueva build está publicada en $executable, pero no se completaron todas las operaciones." }
     throw $failure
 }
-Write-Host "Build lista: $executable"
+Write-Host "Ejecutable local listo: $executable"
+if ($Installer) {
+    Write-Host 'Ejecuta el instalador indicado para actualizar la copia del menú Inicio.'
+} else {
+    Write-Host 'Para generar un instalador, vuelve a ejecutar este script con -Installer.'
+}

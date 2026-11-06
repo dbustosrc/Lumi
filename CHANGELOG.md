@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0
+
+- Added an authenticated local API to list, create, edit, and delete tasks. Access tokens are managed in To-do settings.
+- Added an offline index of third-party components and their license texts in About.
+- Changed Lumi's license to GPL-3.0-only.
+
 ## 1.0.0 · 2026-11-03
 
 First public release of Lumi for Windows x64.

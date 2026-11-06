@@ -19,6 +19,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_OBJECT_SHOW, EVENT_SYSTEM_ALERT, GetClassNameW,
     GetWindowThreadProcessId, PM_REMOVE, PeekMessageW, TranslateMessage, WINEVENT_OUTOFCONTEXT,
 };
+use windows::Win32::UI::Shell::{
+    QUNS_ACCEPTS_NOTIFICATIONS, QUNS_APP, QUNS_BUSY, QUNS_NOT_PRESENT,
+    QUNS_PRESENTATION_MODE, QUNS_QUIET_TIME, QUNS_RUNNING_D3D_FULL_SCREEN,
+    SHQueryUserNotificationState,
+};
 use windows::core::{BSTR, Ref, Result as WinResult, implement};
 
 const CLASSIC_POWERSHELL_AUMID: &str =
@@ -27,11 +32,20 @@ const TOAST_SCRIPT: &str = r#"
 [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
 [void][Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime]
 [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
+$aumid = '__AUMID__'
+$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($aumid)
+$history = [Windows.UI.Notifications.ToastNotificationManager]::History
+$historyBefore = @($history.GetHistory($aumid))
+Write-Output ("toast_notifier_setting=" + $notifier.Setting)
+Write-Output ("toast_history_count_before=" + $historyBefore.Count)
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xml.LoadXml('<toast duration="long"><visual><binding template="ToastGeneric"><text>Lumi event probe</text><text>Local test notification</text></binding></visual></toast>')
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 $toast.ExpirationTime = [DateTimeOffset]::Now.AddSeconds(15)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('__AUMID__').Show($toast)
+$notifier.Show($toast)
+Start-Sleep -Milliseconds 500
+$historyAfter = @($history.GetHistory($aumid))
+Write-Output ("toast_history_count_after=" + $historyAfter.Count)
 "#;
 
 static WINEVENT_SYSTEM_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -51,6 +65,17 @@ struct WinEventSource {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct UiaEventSource {
     event_id: i32,
+    process_id: i32,
+    control_type: i32,
+    hwnd_class_name: String,
+    class_name: String,
+    automation_id: String,
+    children: Vec<UiaChildSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UiaChildSource {
+    depth: u8,
     process_id: i32,
     control_type: i32,
     class_name: String,
@@ -92,6 +117,7 @@ struct MetadataEventCounter {
     event_count: Arc<AtomicUsize>,
     event_id: i32,
     sources: &'static Mutex<Vec<UiaEventSource>>,
+    child_walker: Option<windows::Win32::UI::Accessibility::IUIAutomationTreeWalker>,
 }
 
 impl IUIAutomationEventHandler_Impl for MetadataEventCounter_Impl {
@@ -101,7 +127,12 @@ impl IUIAutomationEventHandler_Impl for MetadataEventCounter_Impl {
         _event_id: UIA_EVENT_ID,
     ) -> WinResult<()> {
         self.event_count.fetch_add(1, Ordering::Relaxed);
-        if let Some(source) = uia_source(sender, self.event_id) {
+        if let Some(mut source) = uia_source(&sender, self.event_id) {
+            if source.class_name == "XamlExplorerHostIslandWindow" {
+                if let Some(walker) = &self.child_walker {
+                    source.children = collect_child_metadata(&sender, walker);
+                }
+            }
             record_metadata(self.sources, source);
         }
         Ok(())
@@ -136,15 +167,75 @@ fn record_uia_source(
     }
 }
 
-fn uia_source(sender: Ref<'_, IUIAutomationElement>, event_id: i32) -> Option<UiaEventSource> {
+fn uia_source(sender: &Ref<'_, IUIAutomationElement>, event_id: i32) -> Option<UiaEventSource> {
     let sender = sender.as_ref()?;
+    let hwnd_class_name =
+        window_class_name(unsafe { sender.CurrentNativeWindowHandle().ok()? });
     Some(UiaEventSource {
         event_id,
         process_id: unsafe { sender.CurrentProcessId().ok()? },
         control_type: unsafe { sender.CurrentControlType().ok()?.0 },
-        class_name: unsafe { sender.CurrentClassName().ok()? }.to_string(),
+        hwnd_class_name,
+        class_name: safe_metadata(unsafe { sender.CurrentClassName().ok()? }.to_string()),
         automation_id: safe_metadata(unsafe { sender.CurrentAutomationId().ok()? }.to_string()),
+        children: Vec::new(),
     })
+}
+
+fn window_class_name(hwnd: HWND) -> String {
+    if hwnd.0.is_null() {
+        return String::new();
+    }
+    let mut class_name = [0u16; 128];
+    let length = unsafe { GetClassNameW(hwnd, &mut class_name) }.max(0) as usize;
+    safe_metadata(String::from_utf16_lossy(&class_name[..length]))
+}
+
+fn collect_child_metadata(
+    sender: &Ref<'_, IUIAutomationElement>,
+    walker: &windows::Win32::UI::Accessibility::IUIAutomationTreeWalker,
+) -> Vec<UiaChildSource> {
+    let Some(sender) = sender.as_ref() else {
+        return Vec::new();
+    };
+    let mut children = Vec::new();
+    collect_children(walker, sender, 1, &mut children);
+    children
+}
+
+fn collect_children(
+    walker: &windows::Win32::UI::Accessibility::IUIAutomationTreeWalker,
+    parent: &IUIAutomationElement,
+    depth: u8,
+    children: &mut Vec<UiaChildSource>,
+) {
+    if depth > 4 || children.len() >= 64 {
+        return;
+    }
+    let mut child = unsafe { walker.GetFirstChildElement(parent) }.ok();
+    while let Some(element) = child {
+        if children.len() >= 64 {
+            break;
+        }
+        if let (Ok(process_id), Ok(control_type), Ok(class_name), Ok(automation_id)) = unsafe {
+            (
+                element.CurrentProcessId(),
+                element.CurrentControlType(),
+                element.CurrentClassName(),
+                element.CurrentAutomationId(),
+            )
+        } {
+            children.push(UiaChildSource {
+                depth,
+                process_id,
+                control_type: control_type.0,
+                class_name: safe_metadata(class_name.to_string()),
+                automation_id: safe_metadata(automation_id.to_string()),
+            });
+        }
+        collect_children(walker, &element, depth + 1, children);
+        child = unsafe { walker.GetNextSiblingElement(&element) }.ok();
+    }
 }
 
 fn safe_metadata(value: String) -> String {
@@ -231,6 +322,10 @@ fn windows_toast_event_sources_probe_metadata_only()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
     let _com = ComApartment;
+    let (app_events, mut app_event_receiver) = crate::application::events::create_event_channel();
+    let _notification_watcher =
+        crate::infrastructure::windows::notifications::NotificationWatcher::start(app_events)?;
+    thread::sleep(Duration::from_millis(250));
     WINEVENT_SYSTEM_COUNT.store(0, Ordering::Relaxed);
     WINEVENT_OBJECT_COUNT.store(0, Ordering::Relaxed);
     WINEVENT_SOURCES
@@ -294,6 +389,7 @@ fn windows_toast_event_sources_probe_metadata_only()
         event_count: live_count.clone(),
         event_id: windows::Win32::UI::Accessibility::UIA_LiveRegionChangedEventId.0,
         sources: &UIA_LIVE_SOURCES,
+        child_walker: None,
     }
     .into();
     unsafe {
@@ -311,6 +407,7 @@ fn windows_toast_event_sources_probe_metadata_only()
         event_count: window_open_count.clone(),
         event_id: windows::Win32::UI::Accessibility::UIA_Window_WindowOpenedEventId.0,
         sources: &UIA_OPEN_SOURCES,
+        child_walker: Some(unsafe { automation.RawViewWalker()? }),
     }
     .into();
     unsafe {
@@ -365,8 +462,14 @@ fn windows_toast_event_sources_probe_metadata_only()
             &toast_script,
         ])
         .creation_flags(0x0800_0000)
-        .status();
+        .output();
     pump_messages_for(Duration::from_secs(8));
+    let mut notification_arrived_count = 0;
+    while let Ok(event) = app_event_receiver.try_recv() {
+        if matches!(event, crate::application::events::AppEvent::NotificationArrived) {
+            notification_arrived_count += 1;
+        }
+    }
 
     unsafe {
         automation.RemoveNotificationEventHandler(&root, &notification_handler)?;
@@ -386,7 +489,10 @@ fn windows_toast_event_sources_probe_metadata_only()
     let toast_exit_code = toast_status
         .as_ref()
         .ok()
-        .and_then(std::process::ExitStatus::code)
+        .and_then(|output| output.status.code())
+        .unwrap_or(-1);
+    let shell_notification_state = unsafe { SHQueryUserNotificationState() }
+        .map(|state| state.0)
         .unwrap_or(-1);
     let win_events = WINEVENT_SOURCES
         .lock()
@@ -407,6 +513,30 @@ fn windows_toast_event_sources_probe_metadata_only()
         .clone();
     println!("toast_sender_aumid={CLASSIC_POWERSHELL_AUMID}");
     println!("toast_sender_exit_code={toast_exit_code}");
+    println!("lumi_notification_arrived_count={notification_arrived_count}");
+    if let Some(output) = toast_status.as_ref().ok() {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line.starts_with("toast_notifier_setting=")
+                || line.starts_with("toast_history_count_")
+            {
+                println!("{line}");
+            }
+        }
+    }
+    println!(
+        "shell_user_notification_state={} ({})",
+        shell_notification_state,
+        match shell_notification_state {
+            x if x == QUNS_NOT_PRESENT.0 => "not_present",
+            x if x == QUNS_BUSY.0 => "busy",
+            x if x == QUNS_RUNNING_D3D_FULL_SCREEN.0 => "fullscreen",
+            x if x == QUNS_PRESENTATION_MODE.0 => "presentation_mode",
+            x if x == QUNS_ACCEPTS_NOTIFICATIONS.0 => "accepts_notifications",
+            x if x == QUNS_QUIET_TIME.0 => "quiet_time",
+            x if x == QUNS_APP.0 => "app",
+            _ => "unknown",
+        }
+    );
     println!(
         "uia_notification_event_id={} count={} sender_pid={} sender_control_type={}",
         UIA_NotificationEventId.0,
@@ -444,6 +574,10 @@ fn windows_toast_event_sources_probe_metadata_only()
         EVENT_OBJECT_SHOW,
         WINEVENT_OBJECT_COUNT.load(Ordering::Relaxed),
         object_show_sources,
+    );
+    assert!(
+        notification_arrived_count > 0,
+        "NotificationWatcher did not send NotificationArrived"
     );
     Ok(())
 }

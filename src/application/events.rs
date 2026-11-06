@@ -60,8 +60,14 @@ pub enum UserIntent {
 
 /// Everything the controller reacts to: infrastructure notifications,
 /// asynchronous results and user intents.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum AppEvent {
+    TaskApi {
+        command: super::todo_service::TaskCommand,
+        reply: tokio::sync::oneshot::Sender<
+            Result<super::todo_service::TaskReply, super::todo_service::TodoServiceError>,
+        >,
+    },
     MouseMoveStatus(Option<&'static str>),
     MascotProximity(bool),
     MascotActivity,

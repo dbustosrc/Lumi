@@ -72,7 +72,7 @@ impl TaskSchedule {
 }
 
 /// A to-do item owned by the local user.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TodoTask {
     pub id: Uuid,
     pub title: String,
@@ -106,8 +106,14 @@ impl TodoTask {
     }
 
     pub fn toggle(&mut self, now: DateTime<Utc>) {
-        self.is_done = !self.is_done;
-        self.completed_at = self.is_done.then_some(now);
+        self.set_done(!self.is_done, now);
+    }
+
+    pub fn set_done(&mut self, done: bool, now: DateTime<Utc>) {
+        if self.is_done != done {
+            self.is_done = done;
+            self.completed_at = done.then_some(now);
+        }
     }
 }
 

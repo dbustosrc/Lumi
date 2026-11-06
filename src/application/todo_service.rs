@@ -33,6 +33,41 @@ pub struct TodoService {
     tasks: Vec<TodoTask>,
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskChanges {
+    pub title: Option<String>,
+    pub schedule: Option<TaskSchedule>,
+    pub color: Option<TaskColor>,
+    pub is_done: Option<bool>,
+}
+
+#[derive(Debug)]
+pub enum TaskCommand {
+    List,
+    Get(Uuid),
+    Create {
+        title: String,
+        schedule: Option<TaskSchedule>,
+        color: Option<TaskColor>,
+    },
+    Update(Uuid, TaskChanges),
+    Delete(Uuid),
+}
+
+#[derive(Debug)]
+pub enum TaskReply {
+    List(Vec<TodoTask>),
+    Task(TodoTask),
+    Deleted,
+}
+
+impl TaskCommand {
+    pub fn is_mutation(&self) -> bool {
+        !matches!(self, Self::List | Self::Get(_))
+    }
+}
+
 impl TodoService {
     pub fn load(repository: Arc<dyn TaskRepository>) -> Result<Self, PortError> {
         let tasks = repository.load()?;
@@ -48,11 +83,7 @@ impl TodoService {
     }
 
     pub fn add(&mut self, title: &str) -> Result<(), TodoServiceError> {
-        let task = TodoTask::new(title, Utc::now())?;
-        self.commit(|tasks| {
-            tasks.push(task);
-            Ok(())
-        })
+        self.create(title, None, None).map(|_| ())
     }
 
     pub fn rename(
@@ -62,12 +93,15 @@ impl TodoService {
         color_index: i32,
     ) -> Result<(), TodoServiceError> {
         let color = TaskColor::from_index(color_index)?;
-        self.commit(|tasks| {
-            let task = find_task(tasks, id)?;
-            task.rename(title)?;
-            task.color = color;
-            Ok(())
-        })
+        self.update(
+            id,
+            TaskChanges {
+                title: Some(title.into()),
+                color: Some(color),
+                ..TaskChanges::default()
+            },
+        )
+        .map(|_| ())
     }
 
     pub fn add_scheduled(
@@ -78,12 +112,72 @@ impl TodoService {
         daily: bool,
         color_index: i32,
     ) -> Result<(), TodoServiceError> {
+        self.create(
+            title,
+            Some(TaskSchedule::from_fields(date, time, daily)?),
+            Some(TaskColor::from_index(color_index)?),
+        )
+        .map(|_| ())
+    }
+
+    pub fn execute(&mut self, command: TaskCommand) -> Result<TaskReply, TodoServiceError> {
+        Ok(match command {
+            TaskCommand::List => TaskReply::List(self.tasks.clone()),
+            TaskCommand::Get(id) => TaskReply::Task(
+                self.tasks
+                    .iter()
+                    .find(|task| task.id == id)
+                    .ok_or(TodoError::NotFound)?
+                    .clone(),
+            ),
+            TaskCommand::Create {
+                title,
+                schedule,
+                color,
+            } => TaskReply::Task(self.create(&title, schedule, color)?),
+            TaskCommand::Update(id, changes) => TaskReply::Task(self.update(id, changes)?),
+            TaskCommand::Delete(id) => {
+                self.delete(id)?;
+                TaskReply::Deleted
+            }
+        })
+    }
+
+    fn create(
+        &mut self,
+        title: &str,
+        schedule: Option<TaskSchedule>,
+        color: Option<TaskColor>,
+    ) -> Result<TodoTask, TodoServiceError> {
         let mut task = TodoTask::new(title, Utc::now())?;
-        task.schedule = TaskSchedule::from_fields(date, time, daily)?;
-        task.color = TaskColor::from_index(color_index)?;
+        if let Some(schedule) = schedule {
+            task.schedule = schedule;
+        }
+        if let Some(color) = color {
+            task.color = color;
+        }
         self.commit(|tasks| {
-            tasks.push(task);
-            Ok(())
+            tasks.push(task.clone());
+            Ok(task)
+        })
+    }
+
+    fn update(&mut self, id: Uuid, changes: TaskChanges) -> Result<TodoTask, TodoServiceError> {
+        self.commit(|tasks| {
+            let task = find_task(tasks, id)?;
+            if let Some(title) = changes.title {
+                task.rename(&title)?;
+            }
+            if let Some(schedule) = changes.schedule {
+                task.schedule = schedule;
+            }
+            if let Some(color) = changes.color {
+                task.color = color;
+            }
+            if let Some(done) = changes.is_done {
+                task.set_done(done, Utc::now());
+            }
+            Ok(task.clone())
         })
     }
 
@@ -129,15 +223,15 @@ impl TodoService {
 
     /// Applies a mutation on a copy and only keeps it once it is saved, so
     /// memory and disk never diverge.
-    fn commit(
+    fn commit<T>(
         &mut self,
-        mutation: impl FnOnce(&mut Vec<TodoTask>) -> Result<(), TodoError>,
-    ) -> Result<(), TodoServiceError> {
+        mutation: impl FnOnce(&mut Vec<TodoTask>) -> Result<T, TodoError>,
+    ) -> Result<T, TodoServiceError> {
         let mut next = self.tasks.clone();
-        mutation(&mut next)?;
+        let result = mutation(&mut next)?;
         self.repository.save(&next)?;
         self.tasks = next;
-        Ok(())
+        Ok(result)
     }
 }
 

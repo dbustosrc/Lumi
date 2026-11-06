@@ -24,7 +24,37 @@ Lumi requires Windows 10 or 11 on x64 with hardware graphics support. If Windows
 
 ## Local data
 
-Lumi stores preferences, tasks, water history, Shelf items and logs in `%APPDATA%\Lumi`. Configure optional Music Assistant and Wyoming connections in Settings.
+Lumi stores preferences, tasks, water history, Shelf items and logs in `%APPDATA%\Lumi`. A local build and an installed copy use the same data when run under the same Windows account. Installing an update preserves these files. Configure optional Music Assistant and Wyoming connections in Settings.
+
+## Task API
+
+With Lumi running, open **Settings → To-do → Task API**, generate an access token, and copy it to your client. Tokens are valid until revoked. Lumi stores only their hashes and lets you revoke each token separately.
+
+Send requests to `http://127.0.0.1:17642` from an application on the same PC. Every request needs `Authorization: Bearer <token>`. Send JSON with `Content-Type: application/json` for creates and updates.
+
+| Method | Path | Success response |
+| --- | --- | --- |
+| GET | `/v1/tasks` | 200 and an array of tasks |
+| GET | `/v1/tasks/{id}` | 200 and the task |
+| POST | `/v1/tasks` | 201, the created task, and a `Location` header |
+| PATCH | `/v1/tasks/{id}` | 200 and the updated task |
+| DELETE | `/v1/tasks/{id}` | 204 with an empty body |
+
+To create a task, send a JSON body such as:
+
+```json
+{
+  "title": "Review notes",
+  "schedule": { "date": "2026-11-04", "time": "14:30:00", "daily": false },
+  "color": "blue"
+}
+```
+
+Only `title` is required on creation. A task defaults to today, no time, no recurrence, and green. Colors are `green`, `blue`, `orange`, `red`, and `purple`. Schedules use local dates and times. Set `schedule.time` to `null` for a task without a time.
+
+A patch can change `title`, `schedule`, `color`, or `is_done`. Omit fields to keep their values. When changing the schedule, send the whole schedule object. For example, `{"is_done":true}` marks the task complete. Task responses include the UUID `id`, schedule, color, completion status, and UTC creation and completion timestamps.
+
+Errors have an `{"error":"code"}` body. An invalid or revoked token returns 401, an unknown task returns 404, malformed JSON returns 400, and a blank title returns 422. API changes appear in To-do and are saved to the same `tasks.json` as changes made in Lumi.
 
 ## Build from source
 
@@ -36,12 +66,12 @@ cd Lumi
 pwsh -NoProfile -File ./build.ps1
 ```
 
-The script creates `target/release/lumi.exe`. It may restart a running instance from this checkout and clears generated build files and Lumi logs. Use `-WhatIf` to preview these actions.
+The script creates `target/release/lumi.exe` and removes older build artifacts after a successful build. It may restart a running instance from this checkout. It clears temporary build files even if the build fails and clears Lumi logs after success. Use `-WhatIf` to preview these actions.
 
-To build the installer in `dist`, install Inno Setup 7 and run `pwsh -NoProfile -File ./build.ps1 -Installer`.
+To build the installer, install Inno Setup 7 and run `pwsh -NoProfile -File ./build.ps1 -Installer`. After the new installer is ready, the script removes the previous distributions from `dist` and prints the new installer's path. A build without `-Installer` keeps the last installer. Run the new installer to update the Start menu copy. Close any local build before opening the installed copy.
 
 ## License
 
 Lumi was created by David R. Bustos.
 
-Lumi is licensed under [GPL-2.0-only](LICENSE). See [third-party notices](third-party-licenses/README.md) for dependency licenses.
+Lumi is licensed under [GPL-3.0-only](LICENSE). In Lumi, open **Settings → About → Third-party licenses** to read dependency licenses offline. The source repository includes the same [third-party notices](third-party-licenses/README.md).
