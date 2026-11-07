@@ -118,34 +118,6 @@ pub const ICON_REMOVE_CROSS: (&str, f32, f32, bool, f32) =
     ("M 2 2 L 8 8 M 8 2 L 2 8", 10.0, 10.0, false, 2.1);
 
 pub fn svg(key: &str, tint: u32) -> String {
-    if matches!(key, "stalk-eye-left" | "stalk-eye-right") {
-        let path = if key == "stalk-eye-left" {
-            "M1 2Q7 1 13 5Q7 7 3 5Z"
-        } else {
-            "M13 2Q7 1 1 5Q7 7 11 5Z"
-        };
-        return format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 14 8\"><path d=\"{path}\" fill=\"#{tint:06x}\"/></svg>"
-        );
-    }
-    if key == "sleep-eye" {
-        return format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 14 8\"><path d=\"M1.5 2Q7 8 12.5 2\" fill=\"none\" stroke=\"#{tint:06x}\" stroke-width=\"1.8\" stroke-linecap=\"round\"/></svg>"
-        );
-    }
-    if key == "mascot-headphones" {
-        return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 28\"><path d=\"M7 18V15C7 -2 53 -2 53 15V18\" fill=\"none\" stroke=\"#c5bdff\" stroke-width=\"2.8\" stroke-linecap=\"round\"/><rect x=\"3\" y=\"14\" width=\"8\" height=\"12\" rx=\"4\" fill=\"#8da4ff\"/><rect x=\"49\" y=\"14\" width=\"8\" height=\"12\" rx=\"4\" fill=\"#8da4ff\"/><path d=\"M7 17V22 M53 17V22\" stroke=\"#e6e5ff\" stroke-width=\"2\" stroke-linecap=\"round\"/></svg>".into();
-    }
-    if key == "mascot-paw" {
-        return format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 12 12\"><path d=\"M2 6V4Q2 2 4 3V2Q6 0 7 3Q9 1 10 4V8Q9 12 5 11Q1 10 2 6Z\" fill=\"#{tint:06x}\"/></svg>"
-        );
-    }
-    if key == "sleep-eyes" {
-        return format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 40 12\"><path d=\"M2 4Q7.5 10 13 4 M27 4Q32.5 10 38 4\" fill=\"none\" stroke=\"#{tint:06x}\" stroke-width=\"1.8\" stroke-linecap=\"round\"/></svg>"
-        );
-    }
     if key == "focus-glow" || key == "eye-halo" {
         return format!(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><defs><radialGradient id=\"g\"><stop offset=\"0\" stop-color=\"#{tint:06x}\" stop-opacity=\"0.7\"/><stop offset=\"0.7\" stop-color=\"#{tint:06x}\" stop-opacity=\"0.55\"/><stop offset=\"1\" stop-color=\"#{tint:06x}\" stop-opacity=\"0\"/></radialGradient></defs><ellipse cx=\"50\" cy=\"50\" rx=\"50\" ry=\"50\" fill=\"url(#g)\"/></svg>"
@@ -185,21 +157,6 @@ pub fn svg(key: &str, tint: u32) -> String {
         "\u{e713}" => (SETTINGS_PATHS[0], 24., 24., false, 1.7),
         "\u{e7f4}" => (SETTINGS_PATHS[1], 24., 24., false, 1.7),
         "\u{e790}" => (SETTINGS_PATHS[2], 24., 24., false, 1.7),
-        "bell" => (
-            "M5 16C7 14 7 12 7 8A5 5 0 0 1 17 8C17 12 17 14 19 16Z M10 20Q12 22 14 20 M12 1V3",
-            24.,
-            24.,
-            false,
-            1.8,
-        ),
-        "wake-eyes" => ("M3 8Q8 1 13 8 M24 8Q29 1 34 8", 40., 12., false, 2.6),
-        "wake-hand" => (
-            "M7 20L3 14Q2 12 4 12L7 14L5 6Q5 4 7 5L9 11L8 3Q8 1 10 2L12 10L13 3Q14 1 15 3L15 11L17 6Q19 4 19 7L18 16Q17 21 12 22Z",
-            24.,
-            24.,
-            true,
-            0.,
-        ),
         "bluetooth" => ICON_BLUETOOTH,
         "headphones" => ICON_HEADPHONES,
         "mouse-move" => (

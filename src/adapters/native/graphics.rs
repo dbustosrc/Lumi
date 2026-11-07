@@ -1,6 +1,6 @@
 //! One shared native graphics device; window surfaces own no application state.
 use super::model::{Rect, SURFACE_WIDTH, Shell};
-use super::scene::Paint;
+use super::scene::{Paint, PathSegment};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use windows::Win32::Foundation::{HMODULE, HWND};
@@ -22,6 +22,7 @@ pub struct GraphicsDevice {
     factory: ID2D1Factory1,
     write: IDWriteFactory,
     composition: IDCompositionDevice,
+    round_stroke: ID2D1StrokeStyle,
 }
 impl GraphicsDevice {
     pub fn new() -> Result<Rc<Self>> {
@@ -46,6 +47,21 @@ impl GraphicsDevice {
             let d2d = factory.CreateDevice(&dxgi_device)?;
             let write: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let composition: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
+            let round_stroke = factory
+                .CreateStrokeStyle(
+                    &D2D1_STROKE_STYLE_PROPERTIES1 {
+                        startCap: D2D1_CAP_STYLE_ROUND,
+                        endCap: D2D1_CAP_STYLE_ROUND,
+                        dashCap: D2D1_CAP_STYLE_ROUND,
+                        lineJoin: D2D1_LINE_JOIN_ROUND,
+                        miterLimit: 2.,
+                        dashStyle: D2D1_DASH_STYLE_SOLID,
+                        dashOffset: 0.,
+                        transformType: D2D1_STROKE_TRANSFORM_TYPE_NORMAL,
+                    },
+                    None,
+                )?
+                .into();
             Ok(Rc::new(Self {
                 d3d,
                 dxgi,
@@ -53,6 +69,7 @@ impl GraphicsDevice {
                 factory,
                 write,
                 composition,
+                round_stroke,
             }))
         }
     }
@@ -322,14 +339,17 @@ impl Surface {
             let outer_layer = opacity < 0.999;
             let opacity = 1.;
             let mut scope_layer = false;
-            self.context.SetTransform(&Matrix3x2 {
+            let base_transform = Matrix3x2 {
                 M11: 1.,
                 M12: 0.,
                 M21: 0.,
                 M22: 1.,
                 M31: offset.0,
                 M32: offset.1,
-            });
+            };
+            let mut current_transform = base_transform;
+            let mut transform_stack: Vec<Matrix3x2> = Vec::new();
+            self.context.SetTransform(&current_transform);
             if outer_layer {
                 self.opacity_layer(scene_opacity);
             }
@@ -405,7 +425,7 @@ impl Surface {
                             point(*x2, *y2),
                             &self.brush,
                             *width,
-                            None,
+                            &self.device.round_stroke,
                         );
                     }
                     Paint::Text(r, text, size, c, weight, center) => {
@@ -643,6 +663,111 @@ impl Surface {
                             self.context.PopLayer();
                         }
                     }
+                    Paint::PushTransform {
+                        x,
+                        y,
+                        angle,
+                        scale_x,
+                        scale_y,
+                    } => {
+                        transform_stack.push(current_transform);
+                        let (sin, cos) = angle.sin_cos();
+                        let local = Matrix3x2 {
+                            M11: cos * *scale_x,
+                            M12: sin * *scale_y,
+                            M21: -sin * *scale_x,
+                            M22: cos * *scale_y,
+                            M31: *x,
+                            M32: *y,
+                        };
+                        current_transform = mul_matrix(local, current_transform);
+                        self.context.SetTransform(&current_transform);
+                    }
+                    Paint::PopTransform => {
+                        if let Some(previous) = transform_stack.pop() {
+                            current_transform = previous;
+                            self.context.SetTransform(&current_transform);
+                        }
+                    }
+                    Paint::Ellipse {
+                        center,
+                        radius,
+                        color: tint_color,
+                        alpha,
+                        stroke,
+                    } => {
+                        let ellipse = D2D1_ELLIPSE {
+                            point: point(center.0, center.1),
+                            radiusX: radius.0,
+                            radiusY: radius.1,
+                        };
+                        self.tint(*tint_color, *alpha * opacity);
+                        if let Some(width) = stroke {
+                            self.context.DrawEllipse(
+                                &ellipse,
+                                &self.brush,
+                                *width,
+                                &self.device.round_stroke,
+                            );
+                        } else {
+                            self.context.FillEllipse(&ellipse, &self.brush);
+                        }
+                    }
+                    Paint::VectorPath {
+                        start,
+                        segments,
+                        closed,
+                        fill,
+                        stroke,
+                    } => {
+                        let path = self.device.factory.CreatePathGeometry()?;
+                        let sink = path.Open()?;
+                        sink.BeginFigure(
+                            point(start.0, start.1),
+                            if fill.is_some() {
+                                D2D1_FIGURE_BEGIN_FILLED
+                            } else {
+                                D2D1_FIGURE_BEGIN_HOLLOW
+                            },
+                        );
+                        for segment in segments {
+                            match *segment {
+                                PathSegment::Line(x, y) => sink.AddLine(point(x, y)),
+                                PathSegment::Quad(cx, cy, x, y) => {
+                                    sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT {
+                                        point1: point(cx, cy),
+                                        point2: point(x, y),
+                                    });
+                                }
+                                PathSegment::Cubic(c1x, c1y, c2x, c2y, x, y) => {
+                                    sink.AddBezier(&D2D1_BEZIER_SEGMENT {
+                                        point1: point(c1x, c1y),
+                                        point2: point(c2x, c2y),
+                                        point3: point(x, y),
+                                    });
+                                }
+                            }
+                        }
+                        sink.EndFigure(if *closed {
+                            D2D1_FIGURE_END_CLOSED
+                        } else {
+                            D2D1_FIGURE_END_OPEN
+                        });
+                        sink.Close()?;
+                        if let Some((fill_color, fill_alpha)) = fill {
+                            self.tint(*fill_color, *fill_alpha * opacity);
+                            self.context.FillGeometry(&path, &self.brush, None);
+                        }
+                        if let Some((stroke_color, stroke_width, stroke_alpha)) = stroke {
+                            self.tint(*stroke_color, *stroke_alpha * opacity);
+                            self.context.DrawGeometry(
+                                &path,
+                                &self.brush,
+                                *stroke_width,
+                                &self.device.round_stroke,
+                            );
+                        }
+                    }
                     Paint::Clip(r) => self
                         .context
                         .PushAxisAlignedClip(&rect(*r), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE),
@@ -673,12 +798,12 @@ impl Surface {
         unsafe {
             self.context.PushLayer(
                 &D2D1_LAYER_PARAMETERS1 {
-                    contentBounds: rect(Rect::new(
-                        0.,
-                        0.,
-                        self.width as f32 / self.scale,
-                        self.height as f32 / self.scale,
-                    )),
+                    contentBounds: D2D_RECT_F {
+                        left: -16384.,
+                        top: -16384.,
+                        right: 16384.,
+                        bottom: 16384.,
+                    },
                     geometricMask: std::mem::ManuallyDrop::new(None),
                     maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                     maskTransform: Matrix3x2::identity(),
@@ -811,9 +936,17 @@ impl Surface {
             }
             let mut transform = Matrix3x2::identity();
             self.context.GetTransform(&mut transform);
-            let mut at = transform;
-            at.M31 += r.x;
-            at.M32 += r.y;
+            let at = mul_matrix(
+                Matrix3x2 {
+                    M11: 1.,
+                    M12: 0.,
+                    M21: 0.,
+                    M22: 1.,
+                    M31: r.x,
+                    M32: r.y,
+                },
+                transform,
+            );
             self.context.SetTransform(&at);
             let translucent = opacity < 0.999;
             if translucent {
@@ -888,6 +1021,16 @@ impl Surface {
             }
             Ok(())
         }
+    }
+}
+fn mul_matrix(a: Matrix3x2, b: Matrix3x2) -> Matrix3x2 {
+    Matrix3x2 {
+        M11: a.M11 * b.M11 + a.M12 * b.M21,
+        M12: a.M11 * b.M12 + a.M12 * b.M22,
+        M21: a.M21 * b.M11 + a.M22 * b.M21,
+        M22: a.M21 * b.M12 + a.M22 * b.M22,
+        M31: a.M31 * b.M11 + a.M32 * b.M21 + b.M31,
+        M32: a.M31 * b.M12 + a.M32 * b.M22 + b.M32,
     }
 }
 fn color(value: u32, a: f32) -> D2D1_COLOR_F {

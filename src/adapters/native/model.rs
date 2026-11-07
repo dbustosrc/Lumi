@@ -13,19 +13,11 @@ use crate::domain::notch::NotchView;
 use crate::domain::todo::{TodoProgress, TodoTask};
 use crate::domain::water::WaterState;
 
-pub const MASCOT_ALERT_DURATION: Duration = Duration::from_millis(2400);
-pub const MASCOT_WAKE_DURATION: Duration = Duration::from_millis(1600);
-pub const MASCOT_HEADPHONES_DURATION: Duration = Duration::from_millis(3200);
-const STALK_TRANSITION: Duration = Duration::from_millis(420);
-pub const MASCOT_PROXIMITY_DIPS: f32 = 96. * 5. / 2.54;
+#[cfg(test)]
+pub use super::mascot::{MascotClip, VARIANTS_PER_CLIP};
+pub use super::mascot::{CursorSample, MascotChoreographer, MascotLiveState};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WakeStyle {
-    #[default]
-    Gentle,
-    OneEye,
-    Surprise,
-}
+pub const MASCOT_PROXIMITY_DIPS: f32 = 96. * 5. / 2.54;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -263,20 +255,9 @@ pub struct UiModel {
     pub focus_notice: Option<(FocusPhase, u64)>,
     pub mascot: bool,
     pub dozing: bool,
-    pub wake: Option<Instant>,
-    pub wake_style: WakeStyle,
-    wake_cycle: u8,
-    pub headphones_started: Option<Instant>,
-    pub headphones_pending: bool,
     pub cursor_near: bool,
-    gaze_from: (f32, f32),
-    gaze_to: (f32, f32),
-    gaze_changed: Instant,
-    stalk_from: f32,
-    stalk_changed: Instant,
+    pub choreographer: MascotChoreographer,
     pub alert_started: Instant,
-    pub bell_started: Option<Instant>,
-    pub bell_pending: bool,
     pub nav: bool,
     pub nav_changed: Instant,
     pub nav_from: f32,
@@ -358,20 +339,9 @@ impl UiModel {
             focus_notice: None,
             mascot: settings.is_mascot_enabled,
             dozing: false,
-            wake: None,
-            wake_style: WakeStyle::Gentle,
-            wake_cycle: 0,
-            headphones_started: None,
-            headphones_pending: false,
             cursor_near: false,
-            gaze_from: (0., 0.),
-            gaze_to: (0., 0.),
-            gaze_changed: settled,
-            stalk_from: 0.,
-            stalk_changed: settled,
+            choreographer: MascotChoreographer::new(now),
             alert_started: now,
-            bell_started: None,
-            bell_pending: false,
             nav: false,
             nav_changed: settled,
             nav_from: 0.,
@@ -393,15 +363,15 @@ impl UiModel {
         match update {
             ViewUpdate::MouseMoveStatus(error) => self.mouse_move_error = error,
             ViewUpdate::MascotHeadphones => {
-                if self.mascot && self.headphones.is_some() {
-                    self.headphones_pending = true;
-                }
+                self.choreographer.on_headphones_connected(
+                    self.mascot,
+                    self.headphones.is_some(),
+                    now,
+                );
             }
             ViewUpdate::MascotAlert => {
-                if self.mascot && self.bell_progress(now).is_none() {
-                    self.bell_pending = true;
-                    self.advance_mascot_reactions(now);
-                }
+                self.choreographer.on_alert(self.mascot, now);
+                self.advance_mascot_reactions(now);
             }
             ViewUpdate::View(view) => {
                 if self.view != view {
@@ -446,6 +416,12 @@ impl UiModel {
             }
             ViewUpdate::LyricsMode(value) => self.lyrics_mode = value,
             ViewUpdate::Tasks { tasks, progress } => {
+                self.choreographer.on_tasks_updated(
+                    progress.done,
+                    progress.total,
+                    self.mascot,
+                    now,
+                );
                 self.tasks = tasks;
                 self.progress = progress;
             }
@@ -474,6 +450,7 @@ impl UiModel {
                 self.editor_error = Some(error_key);
             }
             ViewUpdate::Voice(value) => {
+                self.choreographer.on_voice_updated(value, self.mascot, now);
                 self.voice = value;
                 self.voice_error = if let VoiceState::Failed(key) = value {
                     Some(key)
@@ -482,6 +459,8 @@ impl UiModel {
                 };
             }
             ViewUpdate::ShelfItems(items) => {
+                self.choreographer
+                    .on_shelf_updated(items.len(), self.mascot, now);
                 self.previous_shelf = std::mem::replace(&mut self.shelf, items);
                 self.shelf_change = now;
             }
@@ -491,17 +470,24 @@ impl UiModel {
                 }
             }
             ViewUpdate::ShelfDragHover(value) => self.shelf_drag = value,
-            ViewUpdate::Power(value) => self.power = value,
+            ViewUpdate::Power(value) => {
+                self.choreographer
+                    .on_power_updated(value, self.mascot, now);
+                self.power = value;
+            }
             ViewUpdate::Headphones(value) => {
-                if value.is_none() {
-                    self.headphones_pending = false;
-                    self.headphones_started = None;
-                }
+                self.choreographer.on_headphones_updated(value.is_some());
                 self.headphones = value;
             }
             ViewUpdate::MediaConnection(value) => self.connection = value,
-            ViewUpdate::Utility(value) => self.utility = Some(value),
+            ViewUpdate::Utility(value) => {
+                self.choreographer
+                    .on_utility_updated(value.focus_running, self.mascot, now);
+                self.utility = Some(value);
+            }
             ViewUpdate::Water(value) => {
+                self.choreographer
+                    .on_water_updated(value.consumed_ml, self.mascot, now);
                 let old = self.water.as_ref().map_or(0, |w| w.consumed_ml);
                 if old != value.consumed_ml {
                     self.previous_water = old;
@@ -519,12 +505,19 @@ impl UiModel {
                 is_enabled,
             } => {
                 self.mascot = is_enabled;
+                if !is_enabled {
+                    let _ = self
+                        .choreographer
+                        .advance(now, false, false, false, &mut self.dozing);
+                }
                 if self.dozing && !is_dozing {
                     self.wake_mascot(now);
                 }
                 self.dozing = is_dozing;
             }
             ViewUpdate::FocusReminder { phase, seconds } => {
+                self.choreographer
+                    .on_focus_reminder(phase, self.mascot, now);
                 self.focus_notice = Some((phase, seconds));
                 self.hud_alert = true;
                 self.alert_started = now;
@@ -536,6 +529,9 @@ impl UiModel {
                 alert,
                 reminder,
             } => {
+                if title_key == "desktopUi.water-reminder" {
+                    self.choreographer.on_water_reminder(self.mascot, now);
+                }
                 self.hud_title = crate::i18n::translate(title_key);
                 self.hud_detail = detail;
                 self.hud_level = level;
@@ -704,59 +700,41 @@ impl UiModel {
             && !self.motion.running(now)
     }
     pub fn wake_mascot(&mut self, now: Instant) {
-        if self.mascot && self.dozing {
-            self.wake_style = match self.wake_cycle {
-                0 => WakeStyle::Gentle,
-                1 => WakeStyle::OneEye,
-                _ => WakeStyle::Surprise,
-            };
-            self.wake_cycle = (self.wake_cycle + 1) % 3;
-            self.wake = Some(now);
-            self.dozing = false;
-        }
+        self.choreographer.wake(now, self.mascot, &mut self.dozing);
     }
+    #[cfg(test)]
     pub fn wake_progress(&self, now: Instant) -> Option<f32> {
-        self.wake
-            .map(|started| {
-                now.saturating_duration_since(started).as_secs_f32()
-                    / MASCOT_WAKE_DURATION.as_secs_f32()
-            })
-            .filter(|p| *p < 1.)
-    }
-    pub fn headphones_progress(&self, now: Instant) -> Option<f32> {
-        if !self.compact_mascot(now) || self.headphones.is_none() {
-            return None;
-        }
-        self.headphones_started
-            .map(|started| {
-                now.saturating_duration_since(started).as_secs_f32()
-                    / MASCOT_HEADPHONES_DURATION.as_secs_f32()
-            })
-            .filter(|p| *p < 1.)
-    }
-    pub fn gaze(&self, now: Instant) -> (f32, f32) {
-        let t = (now
-            .saturating_duration_since(self.gaze_changed)
-            .as_secs_f32()
-            / 0.18)
-            .clamp(0., 1.);
-        let ease = 1. - (1. - t).powi(3);
-        (
-            self.gaze_from.0 + (self.gaze_to.0 - self.gaze_from.0) * ease,
-            self.gaze_from.1 + (self.gaze_to.1 - self.gaze_from.1) * ease,
+        self.choreographer.clip_progress(
+            MascotClip::WakeRubEye,
+            now,
+            self.compact_mascot(now),
+            self.headphones.is_some(),
         )
     }
-    pub fn stalk_amount(&self, now: Instant) -> f32 {
-        let t = (now
-            .saturating_duration_since(self.stalk_changed)
-            .as_secs_f32()
-            / STALK_TRANSITION.as_secs_f32())
-        .min(1.);
-        let eased = t * t * (3. - 2. * t);
-        let target = if self.cursor_near { 1. } else { 0. };
-        self.stalk_from + (target - self.stalk_from) * eased
+    #[cfg(test)]
+    pub fn greeting_progress(&self, now: Instant) -> Option<f32> {
+        self.choreographer.clip_progress(
+            MascotClip::GreetingWave,
+            now,
+            self.compact_mascot(now),
+            self.headphones.is_some(),
+        )
     }
-
+    #[cfg(test)]
+    pub fn headphones_progress(&self, now: Instant) -> Option<f32> {
+        self.choreographer.clip_progress(
+            MascotClip::Headphones,
+            now,
+            self.compact_mascot(now),
+            self.headphones.is_some(),
+        )
+    }
+    pub fn gaze(&self, now: Instant) -> (f32, f32) {
+        self.choreographer.gaze(now)
+    }
+    pub fn stalk_amount(&self, now: Instant) -> f32 {
+        self.choreographer.stalk_amount(now)
+    }
     pub fn observe_mascot_cursor(
         &mut self,
         cursor: Option<(f32, f32)>,
@@ -764,89 +742,58 @@ impl UiModel {
         now: Instant,
     ) -> bool {
         let capsule = Shell::for_view(NotchView::Closed, false).body();
-        let nearby = cursor.filter(|(x, y)| {
-            self.compact_mascot(now)
-                && radius > 0.
-                && (x - x.clamp(capsule.x, capsule.x + capsule.w)).hypot(y - y.clamp(0., capsule.h))
-                    <= radius
-        });
-        let near = nearby.is_some();
-        let target = nearby.map_or((0., 0.), |(x, y)| {
-            (
-                ((x - SURFACE_WIDTH / 2.) / radius).clamp(-1., 1.) * 3.5,
-                ((y - 15.) / radius).clamp(-1., 1.) * 2.,
-            )
-        });
-        if near != self.cursor_near {
-            self.stalk_from = self.stalk_amount(now);
-            self.stalk_changed = now;
-        }
-        let changed = near != self.cursor_near
-            || (target.0 - self.gaze_to.0).hypot(target.1 - self.gaze_to.1) > 0.05;
-        if changed {
-            self.gaze_from = self.gaze(now);
-            self.gaze_to = target;
-            self.gaze_changed = now;
-            self.cursor_near = near;
-        }
-        if near {
-            self.wake_mascot(now);
-        }
+        let is_compact = self.compact_mascot(now);
+        let changed = self.choreographer.observe_cursor(
+            CursorSample {
+                point: cursor,
+                capsule,
+                radius,
+                is_compact,
+                is_enabled: self.mascot,
+            },
+            &mut self.dozing,
+            now,
+        );
+        self.cursor_near = self.choreographer.is_cursor_near();
         changed
     }
+    #[cfg(test)]
     pub fn bell_progress(&self, now: Instant) -> Option<f32> {
-        if !self.compact_mascot(now) {
-            return None;
-        }
-        self.bell_started
-            .map(|started| {
-                now.saturating_duration_since(started).as_secs_f32()
-                    / MASCOT_ALERT_DURATION.as_secs_f32()
-            })
-            .filter(|progress| *progress < 1.)
+        self.choreographer.clip_progress(
+            MascotClip::BellAlert,
+            now,
+            self.compact_mascot(now),
+            self.headphones.is_some(),
+        )
     }
     pub fn advance_mascot_reactions(&mut self, now: Instant) -> bool {
-        if !self.mascot {
-            self.bell_pending = false;
-            self.bell_started = None;
-            self.headphones_pending = false;
-            self.headphones_started = None;
-        }
-        if !self.compact_mascot(now) {
-            return false;
-        }
-        let mut changed = false;
-        if self.headphones_pending && self.headphones.is_some() {
-            self.wake_mascot(now);
-            self.headphones_started = Some(now);
-            self.headphones_pending = false;
-            changed = true;
-        }
-        if self.bell_pending {
-            let asleep = self.dozing;
-            self.wake_mascot(now);
-            if asleep {
-                self.wake_style = WakeStyle::Surprise;
-            }
-            self.bell_started = Some(now);
-            self.bell_pending = false;
-            changed = true;
-        }
-        changed
+        let is_compact = self.compact_mascot(now);
+        self.choreographer.advance(
+            now,
+            self.mascot,
+            is_compact,
+            self.headphones.is_some(),
+            &mut self.dozing,
+        )
     }
     pub fn animating(&self, now: Instant) -> bool {
         self.motion.running(now)
-            || self.bell_progress(now).is_some()
-            || self.headphones_progress(now).is_some()
-            || self.compact_mascot(now)
-                && now.saturating_duration_since(self.stalk_changed) < STALK_TRANSITION
+            || self.choreographer.is_animating(
+                now,
+                MascotLiveState {
+                    start: self.start,
+                    is_compact: self.compact_mascot(now),
+                    is_resting_view: self.view == NotchView::Resting,
+                    is_dozing: self.dozing,
+                    is_playing: self.playing,
+                    has_headphones: self.headphones.is_some(),
+                    voice: self.voice,
+                    shelf_drag: self.shelf_drag,
+                },
+            )
             || now.duration_since(self.view_changed) < Duration::from_millis(300)
             || now.duration_since(self.nav_changed) < Duration::from_millis(280)
             || now.duration_since(self.volume_changed) < Duration::from_millis(220)
-            || matches!(self.view, NotchView::Closed | NotchView::Resting)
-                && (self.wake_progress(now).is_some()
-                    || now.saturating_duration_since(self.gaze_changed)
-                        < Duration::from_millis(180))
             || now.duration_since(self.water_change) < Duration::from_millis(900)
             || now.duration_since(self.shelf_change) < Duration::from_millis(310)
             || self.playing
@@ -857,10 +804,6 @@ impl UiModel {
             || now.duration_since(self.list_changed) < Duration::from_millis(220)
             || self.view == NotchView::Lyrics
                 && now.duration_since(self.lyric_changed) < Duration::from_millis(650)
-            || (self.view == NotchView::Resting || self.cursor_near) && !self.dozing && {
-                let elapsed = now.duration_since(self.start).as_secs_f32();
-                elapsed > 3.4 && elapsed % 3.4 < 0.28 || !self.cursor_near && elapsed % 2.6 < 0.28
-            }
             || now.duration_since(self.hover_changed) < Duration::from_millis(155)
     }
 }

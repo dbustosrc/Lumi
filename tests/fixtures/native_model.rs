@@ -3,18 +3,25 @@ use std::time::{Duration, Instant};
 use chrono::{NaiveDate, TimeZone, Utc};
 use uuid::Uuid;
 
+use crate::adapters::native::mascot::{
+    MASCOT_ALERT_DURATION, MASCOT_GREETING_DURATION, MASCOT_HEADPHONES_DURATION,
+    MASCOT_WAKE_DURATION, MascotClip, VARIANTS_PER_CLIP,
+};
 use crate::adapters::native::model::{
-    MASCOT_ALERT_DURATION, MASCOT_HEADPHONES_DURATION, MASCOT_PROXIMITY_DIPS, MASCOT_WAKE_DURATION,
-    Motion, Rect, SURFACE_HEIGHT, SURFACE_WIDTH, Shell, UiModel, WakeStyle, surface_placement,
+    MASCOT_PROXIMITY_DIPS, Motion, Rect, SURFACE_HEIGHT, SURFACE_WIDTH, Shell, UiModel,
+    surface_placement,
 };
 use crate::adapters::native::scene::{Action, Field, Paint, Preference, Scene};
 use crate::adapters::native::{settings, settings::SettingsScrollbar, settings::SettingsUi, views};
 use crate::application::events::UserIntent;
-use crate::application::presenter::{ViewUpdate, VoiceState};
+use crate::application::presenter::{ShelfEntry, ViewUpdate, VoiceState};
+use crate::application::reminders::{FocusPhase, UtilityState};
 use crate::application::settings::AppSettings;
-use crate::domain::device::HeadphoneStatus;
+use crate::domain::device::{HeadphoneStatus, PowerStatus};
 use crate::domain::notch::NotchView;
-use crate::domain::todo::{TaskColor, TaskSchedule, TodoTask};
+use crate::domain::shelf::{ShelfContent, ShelfItem, ShelfItemKind};
+use crate::domain::todo::{TaskColor, TaskSchedule, TodoProgress, TodoTask};
+use crate::domain::water::WaterState;
 
 #[test]
 fn shell_keeps_compact_and_expanded_views_centered_with_navigation_height() {
@@ -68,10 +75,12 @@ fn mascot_visuals_only_render_in_a_stable_compact_capsule() {
     let mut closed = UiModel::new(AppSettings::default());
     closed.mascot = true;
     let now = Instant::now();
-    closed.wake = Some(now - Duration::from_millis(1250));
+    closed
+        .choreographer
+        .start_clip(MascotClip::GreetingWave, now - Duration::from_millis(900));
     let waking = views::notch_scene(&closed, NotchView::Closed, now);
-    assert!(scene_has_icon(&waking, "wake-eyes"));
-    assert!(scene_has_icon(&waking, "wake-hand"));
+    assert!(scene_has_mascot_visual(&waking));
+    assert!(!waking.overlay.is_empty());
 
     let mut resting = UiModel::new(AppSettings::default());
     resting.mascot = true;
@@ -79,11 +88,12 @@ fn mascot_visuals_only_render_in_a_stable_compact_capsule() {
     resting.apply(ViewUpdate::View(NotchView::Resting), transition);
     let settled = transition + Duration::from_secs(1);
     resting.dozing = true;
-    resting.start = settled;
+    resting.start = settled - Duration::from_millis(900);
     let sleeping = views::notch_scene(&resting, NotchView::Resting, settled);
-    assert!(scene_has_icon(&sleeping, "sleep-eyes"));
+    assert!(scene_has_mascot_visual(&sleeping));
     assert!(!scene_has_icon(&sleeping, "eye-halo"));
     assert!(scene_has_text(&sleeping, "Z"));
+    assert!(!sleeping.overlay.is_empty());
 
     let noncompact_views = [
         NotchView::Music,
@@ -111,7 +121,11 @@ fn mascot_visuals_only_render_in_a_stable_compact_capsule() {
             let transition = Instant::now();
             model.apply(ViewUpdate::View(view), transition);
             let at = transition + Duration::from_secs(1);
-            model.wake = wake_age.map(|age| at - age);
+            if let Some(age) = wake_age {
+                model
+                    .choreographer
+                    .start_clip(MascotClip::WakeRubEye, at - age);
+            }
             model.hud_alert = alert;
             model.alert_started = at;
             model.dozing = dozing;
@@ -130,7 +144,9 @@ fn mascot_visuals_only_render_in_a_stable_compact_capsule() {
     let transition = Instant::now();
     expanding.apply(ViewUpdate::View(NotchView::Music), transition);
     let at = transition + Duration::from_secs(1);
-    expanding.wake = Some(at - Duration::from_millis(250));
+    expanding
+        .choreographer
+        .start_clip(MascotClip::WakeRubEye, at - Duration::from_millis(250));
     expanding.dozing = true;
     expanding.start = at;
     for outgoing in [NotchView::Resting, NotchView::Closed] {
@@ -149,7 +165,10 @@ fn mascot_visuals_only_render_in_a_stable_compact_capsule() {
     closing.apply(ViewUpdate::View(NotchView::Closed), close_started);
     let during_close = close_started + Duration::from_millis(100);
     assert!(closing.motion.running(during_close));
-    closing.wake = Some(during_close - Duration::from_millis(250));
+    closing.choreographer.start_clip(
+        MascotClip::WakeRubEye,
+        during_close - Duration::from_millis(250),
+    );
     closing.dozing = true;
     closing.start = during_close;
     let scene = views::notch_scene(&closing, NotchView::Closed, during_close);
@@ -166,28 +185,46 @@ fn mascot_alert_waits_for_a_stable_compact_capsule_and_expires_without_mascot() 
     let expanded_at = started + Duration::from_secs(1);
 
     model.apply(ViewUpdate::MascotAlert, expanded_at);
-    assert!(model.bell_pending);
-    assert!(model.bell_started.is_none());
+    assert!(model.choreographer.has_pending(MascotClip::BellAlert));
+    assert!(
+        model
+            .choreographer
+            .active_started_at(MascotClip::BellAlert, expanded_at)
+            .is_none()
+    );
     let expanded = views::notch_scene(&model, NotchView::Music, expanded_at);
-    assert!(!scene_has_icon(&expanded, "bell"));
+    assert!(!scene_has_mascot_visual(&expanded));
 
     let closing_at = expanded_at + Duration::from_millis(1);
     model.apply(ViewUpdate::View(NotchView::Closed), closing_at);
     let while_closing = closing_at + Duration::from_millis(100);
     assert!(!model.advance_mascot_reactions(while_closing));
-    assert!(model.bell_pending);
-    assert!(model.bell_started.is_none());
+    assert!(model.choreographer.has_pending(MascotClip::BellAlert));
+    assert!(
+        model
+            .choreographer
+            .active_started_at(MascotClip::BellAlert, while_closing)
+            .is_none()
+    );
 
     let compact_at = closing_at + Duration::from_secs(1);
     assert!(model.advance_mascot_reactions(compact_at));
-    assert!(!model.bell_pending);
-    assert_eq!(model.bell_started, Some(compact_at));
+    assert!(!model.choreographer.has_pending(MascotClip::BellAlert));
+    assert_eq!(
+        model
+            .choreographer
+            .active_started_at(MascotClip::BellAlert, compact_at),
+        Some(compact_at)
+    );
     assert_eq!(model.bell_progress(compact_at), Some(0.));
     assert!(!model.dozing, "a bell alert wakes the dozing mascot");
-    assert_eq!(model.wake_style, WakeStyle::Surprise);
-    assert_eq!(model.wake, Some(compact_at));
-    let compact = views::notch_scene(&model, NotchView::Closed, compact_at);
-    assert!(scene_has_icon(&compact, "bell"));
+    let compact = views::notch_scene(
+        &model,
+        NotchView::Closed,
+        compact_at + Duration::from_millis(100),
+    );
+    assert!(scene_has_mascot_visual(&compact));
+    assert!(scene_has_text(&compact, "!"));
     assert!(
         model
             .bell_progress(compact_at + MASCOT_ALERT_DURATION)
@@ -198,38 +235,37 @@ fn mascot_alert_waits_for_a_stable_compact_capsule_and_expires_without_mascot() 
         NotchView::Closed,
         compact_at + MASCOT_ALERT_DURATION,
     );
-    assert!(!scene_has_icon(&expired, "bell"));
+    assert!(!scene_has_mascot_visual(&expired));
 
     let mut disabled = UiModel::new(AppSettings::default());
     disabled.mascot = false;
     disabled.apply(ViewUpdate::MascotAlert, compact_at);
-    assert!(!disabled.bell_pending);
-    assert!(disabled.bell_started.is_none());
+    assert!(!disabled.choreographer.has_pending(MascotClip::BellAlert));
     assert!(disabled.bell_progress(compact_at).is_none());
 
-    let mut cycles = UiModel::new(AppSettings::default());
-    cycles.mascot = true;
-    let first = Instant::now();
-    for (index, style) in [WakeStyle::Gentle, WakeStyle::OneEye, WakeStyle::Surprise]
-        .into_iter()
-        .enumerate()
-    {
-        let wake_at = first + Duration::from_secs(index as u64 * 2);
-        cycles.dozing = true;
-        cycles.wake_mascot(wake_at);
-        assert_eq!(cycles.wake_style, style);
-        assert_eq!(cycles.wake, Some(wake_at));
-        assert!(!cycles.dozing);
-
-        let sample = wake_at + Duration::from_millis(400);
-        assert!(cycles.compact_mascot(sample));
-        assert_eq!(cycles.wake_progress(sample), Some(0.25));
-        assert!(
-            cycles
-                .wake_progress(wake_at + MASCOT_WAKE_DURATION)
-                .is_none()
-        );
-    }
+    let mut wake_chain = UiModel::new(AppSettings::default());
+    wake_chain.mascot = true;
+    let wake_at = Instant::now();
+    wake_chain.dozing = true;
+    wake_chain.wake_mascot(wake_at);
+    assert!(!wake_chain.dozing);
+    assert_eq!(
+        wake_chain.wake_progress(wake_at + Duration::from_millis(400)),
+        Some(0.25)
+    );
+    assert!(
+        wake_chain
+            .greeting_progress(wake_at + Duration::from_millis(400))
+            .is_none()
+    );
+    let greet_sample = wake_at + MASCOT_WAKE_DURATION + Duration::from_millis(420);
+    assert!(wake_chain.wake_progress(greet_sample).is_none());
+    assert!(wake_chain.greeting_progress(greet_sample).is_some());
+    assert!(
+        wake_chain
+            .greeting_progress(wake_at + MASCOT_WAKE_DURATION + MASCOT_GREETING_DURATION)
+            .is_none()
+    );
 }
 
 #[test]
@@ -249,8 +285,7 @@ fn new_headphones_reaction_runs_once_in_the_compact_capsule_and_disconnect_cance
         ViewUpdate::Headphones(Some(status(Some(92)))),
         connected_at + Duration::from_secs(1),
     );
-    assert!(!model.headphones_pending);
-    assert!(model.headphones_started.is_none());
+    assert!(!model.choreographer.has_pending(MascotClip::Headphones));
     assert!(
         model
             .headphones_progress(connected_at + Duration::from_secs(1))
@@ -260,23 +295,35 @@ fn new_headphones_reaction_runs_once_in_the_compact_capsule_and_disconnect_cance
     // A new-connection reaction is queued until the stable compact capsule tick.
     let reaction_at = connected_at + Duration::from_secs(1);
     model.apply(ViewUpdate::MascotHeadphones, reaction_at);
-    assert!(model.headphones_pending);
+    assert!(model.choreographer.has_pending(MascotClip::Headphones));
     assert!(model.advance_mascot_reactions(reaction_at));
-    assert!(!model.headphones_pending);
-    assert_eq!(model.headphones_started, Some(reaction_at));
+    assert!(!model.choreographer.has_pending(MascotClip::Headphones));
+    assert_eq!(
+        model
+            .choreographer
+            .active_started_at(MascotClip::Headphones, reaction_at),
+        Some(reaction_at)
+    );
     assert!(!model.dozing, "new headphones wake a sleeping mascot");
     assert_eq!(model.view, NotchView::Closed);
 
     let middle = reaction_at + Duration::from_millis(600);
     assert!(model.headphones_progress(middle).is_some());
     let scene = views::notch_scene(&model, NotchView::Closed, middle);
-    assert!(scene_has_icon(&scene, "mascot-headphones"));
+    assert!(scene_has_mascot_visual(&scene));
+    assert!(!scene.overlay.is_empty());
 
     model.apply(
         ViewUpdate::Headphones(Some(status(Some(71)))),
         middle + Duration::from_millis(100),
     );
-    assert_eq!(model.headphones_started, Some(reaction_at));
+    assert_eq!(
+        model.choreographer.active_started_at(
+            MascotClip::Headphones,
+            middle + Duration::from_millis(100)
+        ),
+        Some(reaction_at)
+    );
     assert!(
         model
             .headphones_progress(middle + Duration::from_millis(100))
@@ -300,8 +347,7 @@ fn new_headphones_reaction_runs_once_in_the_compact_capsule_and_disconnect_cance
         ViewUpdate::Headphones(None),
         middle + Duration::from_millis(200),
     );
-    assert!(model.headphones_started.is_none());
-    assert!(!model.headphones_pending);
+    assert!(!model.choreographer.has_pending(MascotClip::Headphones));
     assert!(
         model
             .headphones_progress(middle + Duration::from_millis(200))
@@ -328,8 +374,10 @@ fn mascot_proximity_wakes_and_gazes_at_cursor_within_five_cm_without_expanding()
         assert!(model.observe_mascot_cursor(Some((x, y_near)), radius, now));
         assert!(model.cursor_near);
         assert!(!model.dozing, "near cursor wakes the sleeping mascot");
-        assert_eq!(model.wake, Some(now));
-        assert!(model.wake_progress(now).is_some());
+        assert!(
+            model.wake_progress(now).is_none() && model.greeting_progress(now).is_none(),
+            "cursor proximity enters stalking directly without overlapping wake/greeting"
+        );
         assert_eq!(model.view, NotchView::Closed);
         assert!(!model.expanded());
 
@@ -366,7 +414,227 @@ fn mascot_proximity_wakes_and_gazes_at_cursor_within_five_cm_without_expanding()
         assert!(!model.observe_mascot_cursor(Some((x, y)), MASCOT_PROXIMITY_DIPS, at));
         assert!(!model.cursor_near);
         assert!(model.dozing);
-        assert!(model.wake.is_none());
+        assert!(model.wake_progress(at).is_none());
+    }
+}
+
+#[test]
+fn mascot_choreographer_prevents_overlaps_and_queues_event_reactions() {
+    let mut model = UiModel::new(AppSettings::default());
+    model.mascot = true;
+    model.dozing = true;
+    let t0 = Instant::now();
+
+    // 1. Greeting wave is immediately preempted when cursor enters stalking range.
+    model.wake_mascot(t0);
+    let greet_at = t0 + MASCOT_WAKE_DURATION + Duration::from_millis(300);
+    assert!(model.greeting_progress(greet_at).is_some());
+    assert!(model.observe_mascot_cursor(
+        Some((SURFACE_WIDTH / 2. + 20., 44.)),
+        MASCOT_PROXIMITY_DIPS,
+        greet_at,
+    ));
+    assert!(model.greeting_progress(greet_at).is_none());
+    assert!(model.choreographer.paw_swipe(greet_at).is_some());
+    model.observe_mascot_cursor(None, MASCOT_PROXIMITY_DIPS, greet_at + Duration::from_secs(1));
+
+    // 2. Concurrent P3 reactions queue in FIFO order instead of overlapping.
+    let q_at = greet_at + Duration::from_secs(2);
+    model.apply(
+        ViewUpdate::Headphones(Some(HeadphoneStatus {
+            name: "Studio".into(),
+            battery_percent: Some(90),
+        })),
+        q_at,
+    );
+    model.apply(ViewUpdate::MascotHeadphones, q_at);
+    model.apply(ViewUpdate::MascotAlert, q_at);
+    assert!(model.headphones_progress(q_at + Duration::from_millis(200)).is_some());
+    assert!(model.bell_progress(q_at + Duration::from_millis(200)).is_none());
+    assert!(model.choreographer.has_pending(MascotClip::BellAlert));
+
+    let after_hp = q_at + MASCOT_HEADPHONES_DURATION + Duration::from_millis(10);
+    assert!(model.advance_mascot_reactions(after_hp));
+    assert!(model.bell_progress(after_hp + Duration::from_millis(100)).is_some());
+
+    // 3. Initial state hydration does not fire reactions; subsequent state deltas do.
+    let mut events = UiModel::new(AppSettings::default());
+    events.mascot = true;
+    let e0 = Instant::now();
+    let water = |consumed_ml| WaterState {
+        enabled: true,
+        consumed_ml,
+        goal_ml: 2000,
+        bottle_ml: 500,
+        hourly_ml: [0; 24],
+        active_from_minute: 480,
+        active_until_minute: 1020,
+        next_at: None,
+    };
+    let utility = |focus_running| UtilityState {
+        phase: FocusPhase::Focus,
+        focus_seconds: 1500,
+        focus_running,
+        focus_total_seconds: 1500,
+        task_id: None,
+        task_title: String::new(),
+        task_seconds: 0,
+        can_snooze: false,
+    };
+    let shelf_item = |id| ShelfEntry {
+        item: ShelfItem {
+            id: Uuid::from_u128(id),
+            content: ShelfContent::Text("note".into()),
+            display_name: "note".into(),
+            size_bytes: 4,
+            is_directory: false,
+            kind: ShelfItemKind::Text,
+            added_at: Utc.with_ymd_and_hms(2026, 11, 3, 12, 0, 0).unwrap(),
+        },
+        badge: "TXT".into(),
+        size_label: "4 B".into(),
+        thumbnail: None,
+    };
+
+    events.apply(ViewUpdate::Water(water(500)), e0);
+    events.apply(ViewUpdate::Utility(utility(false)), e0);
+    events.apply(ViewUpdate::ShelfItems(vec![shelf_item(1)]), e0);
+    events.apply(
+        ViewUpdate::Tasks {
+            tasks: vec![task(1, date(2026, 11, 3))],
+            progress: TodoProgress { done: 0, total: 1 },
+        },
+        e0,
+    );
+    events.apply(
+        ViewUpdate::Power(PowerStatus {
+            has_battery: true,
+            is_plugged_in: false,
+            percent: 50,
+        }),
+        e0,
+    );
+    assert!(!events.advance_mascot_reactions(e0));
+
+    events.apply(ViewUpdate::Water(water(750)), e0 + Duration::from_secs(1));
+    assert!(events.choreographer.has_pending(MascotClip::WaterSip));
+    events.choreographer.clear_active();
+
+    events.apply(ViewUpdate::Utility(utility(true)), e0 + Duration::from_secs(2));
+    assert!(events.choreographer.has_pending(MascotClip::PomodoroStart));
+
+    events.apply(
+        ViewUpdate::ShelfItems(vec![shelf_item(1), shelf_item(2)]),
+        e0 + Duration::from_secs(3),
+    );
+    assert!(events.choreographer.has_pending(MascotClip::FileCatch));
+
+    let mut events2 = UiModel::new(AppSettings::default());
+    events2.mascot = true;
+    events2.apply(
+        ViewUpdate::Tasks {
+            tasks: vec![task(1, date(2026, 11, 3))],
+            progress: TodoProgress { done: 0, total: 1 },
+        },
+        e0,
+    );
+    events2.apply(
+        ViewUpdate::Tasks {
+            tasks: vec![task(1, date(2026, 11, 3))],
+            progress: TodoProgress { done: 1, total: 1 },
+        },
+        e0 + Duration::from_secs(1),
+    );
+    assert!(events2.choreographer.has_pending(MascotClip::TaskCheer));
+
+    events2.apply(
+        ViewUpdate::Power(PowerStatus {
+            has_battery: true,
+            is_plugged_in: false,
+            percent: 45,
+        }),
+        e0,
+    );
+    events2.apply(
+        ViewUpdate::Power(PowerStatus {
+            has_battery: true,
+            is_plugged_in: true,
+            percent: 46,
+        }),
+        e0 + Duration::from_secs(2),
+    );
+    assert!(events2.choreographer.has_pending(MascotClip::ChargerZap));
+
+    events2.apply(ViewUpdate::Voice(VoiceState::Recording), e0 + Duration::from_secs(3));
+    events2.apply(ViewUpdate::Voice(VoiceState::Idle), e0 + Duration::from_secs(4));
+    assert!(events2.choreographer.has_pending(MascotClip::VoiceReaction));
+}
+
+#[test]
+fn mascot_events_cycle_through_three_distinct_animation_variants() {
+    assert_eq!(VARIANTS_PER_CLIP, 3);
+    let mut model = UiModel::new(AppSettings::default());
+    model.mascot = true;
+    model.view = NotchView::Resting;
+    model.motion = Motion::new(NotchView::Resting);
+
+    let mut at = Instant::now();
+    let mut alert_overlays = Vec::new();
+    for expected in [0_u8, 1, 2, 0] {
+        model.apply(ViewUpdate::MascotAlert, at);
+        let sample_at = at + Duration::from_millis(600);
+        assert_eq!(
+            model.choreographer.active_variant(sample_at, true, false),
+            Some(expected)
+        );
+        if alert_overlays.len() < 3 {
+            let scene = views::notch_scene(&model, NotchView::Resting, sample_at);
+            assert!(!scene.overlay.is_empty());
+            alert_overlays.push((scene.overlay.len(), scene.overlay_bounds()));
+        }
+        at += MASCOT_ALERT_DURATION + Duration::from_millis(50);
+    }
+    assert_ne!(alert_overlays[0], alert_overlays[1]);
+    assert_ne!(alert_overlays[1], alert_overlays[2]);
+    assert_ne!(alert_overlays[0], alert_overlays[2]);
+
+    for expected in [0_u8, 1, 2, 0] {
+        model.dozing = true;
+        model.wake_mascot(at);
+        assert_eq!(
+            model
+                .choreographer
+                .active_variant(at + Duration::from_millis(500), true, false),
+            Some(expected)
+        );
+        assert_eq!(
+            model.choreographer.active_variant(
+                at + MASCOT_WAKE_DURATION + Duration::from_millis(500),
+                true,
+                false
+            ),
+            Some(expected)
+        );
+        at += MASCOT_WAKE_DURATION + MASCOT_GREETING_DURATION + Duration::from_millis(50);
+    }
+
+    for expected in [0_u8, 1, 2, 0] {
+        assert_eq!(model.choreographer.voice_live_variant(), expected);
+        model.apply(ViewUpdate::Voice(VoiceState::Recording), at);
+        model.apply(
+            ViewUpdate::Voice(VoiceState::Idle),
+            at + Duration::from_millis(200),
+        );
+        let react_at = at + Duration::from_millis(250);
+        assert!(model.advance_mascot_reactions(react_at));
+        assert_eq!(
+            model
+                .choreographer
+                .active_variant(react_at + Duration::from_millis(400), true, false),
+            Some(expected)
+        );
+        at += Duration::from_secs(4);
+        let _ = model.advance_mascot_reactions(at);
     }
 }
 
@@ -815,6 +1083,7 @@ fn scene_has_icon(scene: &Scene, name: &str) -> bool {
     scene
         .paint
         .iter()
+        .chain(&scene.overlay)
         .any(|paint| matches!(paint, Paint::Icon(_, glyph, _) if glyph == name))
 }
 
@@ -822,23 +1091,19 @@ fn scene_has_text(scene: &Scene, text: &str) -> bool {
     scene
         .paint
         .iter()
+        .chain(&scene.overlay)
         .any(|paint| matches!(paint, Paint::Text(_, value, _, _, _, _) if value == text))
 }
 
 fn scene_has_mascot_visual(scene: &Scene) -> bool {
-    scene.paint.iter().any(|paint| match paint {
-        Paint::Icon(_, glyph, _) => {
-            matches!(
-                glyph.as_str(),
-                "eye-halo" | "sleep-eyes" | "wake-eyes" | "wake-hand" | "bell"
-            )
-        }
-        Paint::Text(_, text, _, _, _, _) => text == "Z",
-        Paint::Bitmap(rect, width, height, _) => {
-            *width == 16 && *height == 16 && rect.y == 6. && rect.h == 24.
-        }
-        _ => false,
-    })
+    !scene.overlay.is_empty()
+        || scene.paint.iter().any(|paint| match paint {
+            Paint::Icon(_, glyph, _) => glyph == "eye-halo",
+            Paint::Bitmap(rect, width, height, _) => {
+                *width == 16 && *height == 16 && rect.y == 6. && rect.h == 24.
+            }
+            _ => false,
+        })
 }
 
 fn task(id: u128, scheduled: NaiveDate) -> TodoTask {

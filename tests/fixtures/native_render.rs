@@ -1,11 +1,12 @@
 use super::*;
 
 use crate::adapters::native::model::{
-    MASCOT_PROXIMITY_DIPS, Motion, Rect, SURFACE_HEIGHT, SURFACE_WIDTH, Shell, UiModel, WakeStyle,
+    MASCOT_PROXIMITY_DIPS, MascotClip, Motion, Rect, SURFACE_HEIGHT, SURFACE_WIDTH, Shell, UiModel,
+    VARIANTS_PER_CLIP,
 };
-use crate::adapters::native::scene::{Action, Field, Paint, Preference, Scene};
+use crate::adapters::native::scene::{Action, Field, Paint, PathSegment, Preference, Scene};
 use crate::adapters::native::{settings, views};
-use crate::application::presenter::ShelfEntry;
+use crate::application::presenter::{ShelfEntry, VoiceState};
 use crate::application::reminders::{FocusPhase, UtilityState};
 use crate::application::settings::{AppSettings, LanguagePreference};
 use crate::domain::calendar::calendar_grid;
@@ -117,11 +118,11 @@ fn native_scenes_render_review_captures_without_showing_a_window()
         model.view = view;
         model.nav = view != NotchView::Resting;
         if view == NotchView::Resting {
+            model.start = now - Duration::from_millis(1200);
             let scene = views::notch_scene(&model, view, now);
             assert!(
-                scene.paint.iter().any(
-                    |paint| matches!(paint, Paint::Icon(_, glyph, _) if glyph == "sleep-eyes")
-                )
+                !scene.overlay.is_empty(),
+                "dozing mascot renders its over-the-rim sleep bubble"
             );
             assert!(
                 !scene
@@ -144,35 +145,74 @@ fn native_scenes_render_review_captures_without_showing_a_window()
     model.nav = false;
     model.motion = Motion::new(NotchView::Resting);
     model.dozing = false;
-    model.headphones = None;
-    for (name, style, age_ms) in [
-        ("mascot-wake-gentle-350ms-100.png", WakeStyle::Gentle, 350),
-        ("mascot-wake-one-eye-500ms-100.png", WakeStyle::OneEye, 500),
-        (
-            "mascot-wake-surprise-220ms-100.png",
-            WakeStyle::Surprise,
-            220,
-        ),
+    model.headphones = Some(HeadphoneStatus {
+        name: "Studio headphones".into(),
+        battery_percent: Some(82),
+    });
+
+    let all_clips = [
+        MascotClip::WakeRubEye,
+        MascotClip::GreetingWave,
+        MascotClip::BellAlert,
+        MascotClip::Headphones,
+        MascotClip::WaterSip,
+        MascotClip::PomodoroStart,
+        MascotClip::PomodoroComplete,
+        MascotClip::FileCatch,
+        MascotClip::VoiceReaction,
+        MascotClip::ChargerZap,
+        MascotClip::TaskCheer,
+    ];
+    for clip in all_clips {
+        for variant in 0..VARIANTS_PER_CLIP {
+            for frac in [0.15_f32, 0.50, 0.82] {
+                let age = clip.duration().mul_f32(frac);
+                model
+                    .choreographer
+                    .start_clip_variant(clip, variant, now - age);
+                let scene = views::notch_scene(&model, NotchView::Resting, now);
+                assert_scene_fits(&scene, SURFACE_WIDTH, SURFACE_HEIGHT);
+                assert!(
+                    !scene.overlay.is_empty(),
+                    "{clip:?} variant {variant} at {frac} renders cartoon overlay primitives"
+                );
+            }
+        }
+    }
+
+    for (name, clip, variant, age_ms) in [
+        ("mascot-wake-rub-650ms-100.png", MascotClip::WakeRubEye, 0, 650),
+        ("mascot-wake-yawn-v1-100.png", MascotClip::WakeRubEye, 1, 750),
+        ("mascot-wake-pat-v2-100.png", MascotClip::WakeRubEye, 2, 650),
+        ("mascot-greeting-wave-950ms-100.png", MascotClip::GreetingWave, 0, 950),
+        ("mascot-greeting-double-v1-100.png", MascotClip::GreetingWave, 1, 950),
+        ("mascot-greeting-peace-v2-100.png", MascotClip::GreetingWave, 2, 950),
+        ("mascot-bell-swat-1650ms-100.png", MascotClip::BellAlert, 0, 1650),
+        ("mascot-bell-ears-v1-100.png", MascotClip::BellAlert, 1, 900),
+        ("mascot-bell-crier-v2-100.png", MascotClip::BellAlert, 2, 900),
+        ("mascot-headphones-dj-v1-100.png", MascotClip::Headphones, 1, 1800),
+        ("mascot-headphones-rock-v2-100.png", MascotClip::Headphones, 2, 1800),
+        ("mascot-water-sip-900ms-100.png", MascotClip::WaterSip, 0, 900),
+        ("mascot-water-bottle-v1-100.png", MascotClip::WaterSip, 1, 900),
+        ("mascot-water-splash-v2-100.png", MascotClip::WaterSip, 2, 1450),
+        ("mascot-pomodoro-glasses-1100ms-100.png", MascotClip::PomodoroStart, 0, 1100),
+        ("mascot-pomodoro-headband-v1-100.png", MascotClip::PomodoroStart, 1, 1600),
+        ("mascot-pomodoro-notepad-v2-100.png", MascotClip::PomodoroStart, 2, 1200),
+        ("mascot-pomodoro-mug-v1-100.png", MascotClip::PomodoroComplete, 1, 1200),
+        ("mascot-pomodoro-trophy-v2-100.png", MascotClip::PomodoroComplete, 2, 1400),
+        ("mascot-file-catch-1500ms-100.png", MascotClip::FileCatch, 0, 1500),
+        ("mascot-file-spin-v1-100.png", MascotClip::FileCatch, 1, 1100),
+        ("mascot-file-box-v2-100.png", MascotClip::FileCatch, 2, 2100),
+        ("mascot-charger-zap-500ms-100.png", MascotClip::ChargerZap, 0, 500),
+        ("mascot-charger-battery-v1-100.png", MascotClip::ChargerZap, 1, 2100),
+        ("mascot-charger-aura-v2-100.png", MascotClip::ChargerZap, 2, 1400),
+        ("mascot-task-cheer-1100ms-100.png", MascotClip::TaskCheer, 0, 1100),
+        ("mascot-task-painted-v1-100.png", MascotClip::TaskCheer, 1, 1900),
+        ("mascot-task-thumbsup-v2-100.png", MascotClip::TaskCheer, 2, 1200),
     ] {
-        model.wake_style = style;
-        model.wake = Some(now - Duration::from_millis(age_ms));
-        let scene = views::notch_scene(&model, NotchView::Resting, now);
-        if matches!(style, WakeStyle::Gentle | WakeStyle::OneEye) {
-            assert!(
-                scene
-                    .paint
-                    .iter()
-                    .any(|paint| matches!(paint, Paint::Icon(_, glyph, _) if glyph == "sleep-eye"))
-            );
-        }
-        if matches!(style, WakeStyle::OneEye | WakeStyle::Surprise) {
-            assert!(
-                scene
-                    .paint
-                    .iter()
-                    .any(|paint| matches!(paint, Paint::Round(_, _, color) if *color == 0xffffff))
-            );
-        }
+        model
+            .choreographer
+            .start_clip_variant(clip, variant, now - Duration::from_millis(age_ms));
         render_notch(
             &mut surface,
             &model,
@@ -182,22 +222,31 @@ fn native_scenes_render_review_captures_without_showing_a_window()
             output.join("notch").join(name),
         )?;
     }
+    model.headphones = None;
 
-    model.wake = None;
+    model.choreographer.clear_active();
+    model.voice = VoiceState::Recording;
+    render_notch(
+        &mut surface,
+        &model,
+        NotchView::Resting,
+        now,
+        1.0,
+        output.join("notch").join("mascot-voice-listen-100.png"),
+    )?;
+    model.voice = VoiceState::Idle;
+
     model.headphones = Some(HeadphoneStatus {
         name: "Studio headphones".into(),
         battery_percent: Some(82),
     });
-    model.headphones_started = Some(now - Duration::from_millis(1400));
+    model
+        .choreographer
+        .start_clip(MascotClip::Headphones, now - Duration::from_millis(500));
     let scene = views::notch_scene(&model, NotchView::Resting, now);
-    assert_eq!(
-        scene
-            .paint
-            .iter()
-            .filter(|paint| matches!(paint, Paint::Icon(_, glyph, _) if glyph == "mascot-paw"))
-            .count(),
-        2,
-        "mascot uses both paws while placing headphones"
+    assert!(
+        !scene.overlay.is_empty(),
+        "mascot places headphones using articulated overlay hands"
     );
     render_notch(
         &mut surface,
@@ -207,36 +256,19 @@ fn native_scenes_render_review_captures_without_showing_a_window()
         1.0,
         output
             .join("notch")
-            .join("mascot-headphones-posed-1400ms-100.png"),
+            .join("mascot-headphones-posed-500ms-100.png"),
     )?;
 
-    model.headphones_started = Some(now - Duration::from_millis(2600));
+    model
+        .choreographer
+        .start_clip(MascotClip::Headphones, now - Duration::from_millis(2400));
     let scene = views::notch_scene(&model, NotchView::Resting, now);
     assert!(
         scene
-            .paint
+            .overlay
             .iter()
-            .any(|paint| matches!(paint, Paint::Icon(_, glyph, _) if glyph == "mascot-headphones"))
-    );
-    assert!(
-        scene
-            .paint
-            .iter()
-            .any(|paint| matches!(paint, Paint::Icon(_, glyph, _) if glyph == "wake-eyes")),
-        "late headphone phase shows the mascot smiling"
-    );
-    assert!(
-        scene
-            .paint
-            .iter()
-            .any(|paint| matches!(paint, Paint::Text(_, text, _, _, _, _) if text == "♪")),
-        "late headphone phase shows a music note"
-    );
-    assert!(
-        !scene
-            .paint
-            .iter()
-            .any(|paint| matches!(paint, Paint::Icon(_, glyph, _) if glyph == "mascot-paw"))
+            .any(|paint| matches!(paint, Paint::Text(_, text, _, _, _, _) if text == "♪" || text == "♫")),
+        "grooving headphone phase shows floating music notes"
     );
     render_notch(
         &mut surface,
@@ -246,11 +278,11 @@ fn native_scenes_render_review_captures_without_showing_a_window()
         1.0,
         output
             .join("notch")
-            .join("mascot-headphones-on-2600ms-100.png"),
+            .join("mascot-headphones-on-2400ms-100.png"),
     )?;
 
     model.headphones = None;
-    model.headphones_started = None;
+    model.choreographer.clear_active();
     let gaze_started = now - Duration::from_millis(180);
     assert!(model.observe_mascot_cursor(
         Some((SURFACE_WIDTH / 2., 75.)),
@@ -279,15 +311,10 @@ fn native_scenes_render_review_captures_without_showing_a_window()
     )?;
     let stalk_at = gaze_started + Duration::from_millis(420);
     let scene = views::notch_scene(&model, NotchView::Resting, stalk_at);
-    for glyph in ["stalk-eye-left", "stalk-eye-right"] {
-        assert!(
-            scene
-                .paint
-                .iter()
-                .any(|paint| matches!(paint, Paint::Icon(_, name, _) if name == glyph)),
-            "fully stalking mascot renders its own {glyph}"
-        );
-    }
+    assert!(
+        !scene.overlay.is_empty(),
+        "fully stalking mascot renders cat ears and rim paws in overlay"
+    );
     render_notch(
         &mut surface,
         &model,
@@ -298,6 +325,28 @@ fn native_scenes_render_review_captures_without_showing_a_window()
             .join("notch")
             .join("mascot-stalk-cursor-420ms-100.png"),
     )?;
+    let swipe_started = gaze_started + Duration::from_millis(1000);
+    assert!(model.observe_mascot_cursor(
+        Some((SURFACE_WIDTH / 2. + 22., 42.)),
+        MASCOT_PROXIMITY_DIPS,
+        swipe_started,
+    ));
+    assert!(model.choreographer.paw_swipe(swipe_started + Duration::from_millis(180)).is_some());
+    render_notch(
+        &mut surface,
+        &model,
+        NotchView::Resting,
+        swipe_started + Duration::from_millis(180),
+        1.0,
+        output
+            .join("notch")
+            .join("mascot-stalk-swipe-180ms-100.png"),
+    )?;
+    model.observe_mascot_cursor(
+        None,
+        MASCOT_PROXIMITY_DIPS,
+        swipe_started + Duration::from_secs(1),
+    );
 
     model.view = NotchView::Music;
     model.nav = false;
@@ -808,6 +857,9 @@ fn render_notch(
     surface.clip_shell()?;
     surface.paint(&scene.paint, 1., (0., 0.))?;
     surface.unclip_shell();
+    if !scene.overlay.is_empty() {
+        surface.paint(&scene.overlay, 1., (0., 0.))?;
+    }
     let image = readback(surface)?;
     surface.end()?;
 
@@ -997,7 +1049,73 @@ fn assert_scene_fits(scene: &Scene, width: f32, height: f32) {
             && r.x + r.w <= width + 0.01
             && r.y + r.h <= height + 0.01
     };
-    let mut clips = Vec::new();
+    assert!(!scene.paint.is_empty());
+    assert_commands_fit(&scene.paint, width, height, contains);
+    if !scene.overlay.is_empty() {
+        assert_commands_fit(&scene.overlay, width, height, contains);
+        if (width - SURFACE_WIDTH).abs() < 0.01
+            && let Some(bounds) = scene.overlay_bounds()
+        {
+            let half_span = (bounds.x - SURFACE_WIDTH / 2.)
+                .abs()
+                .max((bounds.x + bounds.w - SURFACE_WIDTH / 2.).abs());
+            assert!(
+                half_span <= 89.,
+                "compact mascot overlay exceeds background sampler clearance: {bounds:?}"
+            );
+        }
+    }
+    assert!(scene.hits.iter().all(|hit| contains(hit.rect)));
+    assert!(scene.inputs.iter().all(|input| contains(input.rect)));
+}
+
+fn assert_commands_fit(
+    commands: &[Paint],
+    _width: f32,
+    _height: f32,
+    contains: impl Fn(Rect) -> bool,
+) {
+    #[derive(Clone, Copy)]
+    struct Mat([f32; 6]);
+    impl Mat {
+        fn identity() -> Self {
+            Self([1., 0., 0., 1., 0., 0.])
+        }
+        fn compose(self, x: f32, y: f32, angle: f32, sx: f32, sy: f32) -> Self {
+            let (s, c) = angle.sin_cos();
+            let l = [sx * c, sx * s, -sy * s, sy * c, x, y];
+            let r = self.0;
+            Self([
+                l[0] * r[0] + l[1] * r[2],
+                l[0] * r[1] + l[1] * r[3],
+                l[2] * r[0] + l[3] * r[2],
+                l[2] * r[1] + l[3] * r[3],
+                l[4] * r[0] + l[5] * r[2] + r[4],
+                l[4] * r[1] + l[5] * r[3] + r[5],
+            ])
+        }
+        fn pt(self, x: f32, y: f32) -> (f32, f32) {
+            let m = self.0;
+            (x * m[0] + y * m[2] + m[4], x * m[1] + y * m[3] + m[5])
+        }
+        fn rect(self, r: Rect) -> Rect {
+            let pts = [
+                self.pt(r.x, r.y),
+                self.pt(r.x + r.w, r.y),
+                self.pt(r.x, r.y + r.h),
+                self.pt(r.x + r.w, r.y + r.h),
+            ];
+            let min_x = pts.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
+            let min_y = pts.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+            let max_x = pts.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
+            let max_y = pts.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
+            Rect::new(min_x, min_y, (max_x - min_x).max(0.), (max_y - min_y).max(0.))
+        }
+    }
+
+    let mut clips: Vec<Rect> = Vec::new();
+    let mut transforms: Vec<Mat> = Vec::new();
+    let current_mat = |stack: &[Mat]| stack.last().copied().unwrap_or_else(Mat::identity);
     let clipped_rect_fits = |r: Rect, clips: &[Rect]| {
         if let Some(clip) = clips.last() {
             let visible = r.intersect(*clip);
@@ -1006,8 +1124,9 @@ fn assert_scene_fits(scene: &Scene, width: f32, height: f32) {
             contains(r)
         }
     };
-    assert!(!scene.paint.is_empty());
-    for command in &scene.paint {
+
+    for command in commands {
+        let mat = current_mat(&transforms);
         match command {
             Paint::Round(r, _, _)
             | Paint::Border(r, _, _, _)
@@ -1023,32 +1142,108 @@ fn assert_scene_fits(scene: &Scene, width: f32, height: f32) {
             | Paint::Ring(r, _, _, _, _)
             | Paint::ProgressRing(r, _, _, _)
             | Paint::GradientRound(r, _, _, _)
-            | Paint::Bitmap(r, _, _, _) => assert!(
-                clipped_rect_fits(*r, &clips),
-                "paint rectangle exceeds its visible canvas: {r:?}"
-            ),
+            | Paint::Bitmap(r, _, _, _) => {
+                let world = mat.rect(*r);
+                assert!(
+                    clipped_rect_fits(world, &clips),
+                    "paint rectangle exceeds its visible canvas: {world:?} (local {r:?})"
+                );
+            }
+            Paint::Ellipse {
+                center: (cx, cy),
+                radius: (rx, ry),
+                stroke,
+                ..
+            } => {
+                let pad = stroke.unwrap_or(0.) * 0.5;
+                let world = mat.rect(Rect::new(
+                    cx - rx - pad,
+                    cy - ry - pad,
+                    (rx + pad) * 2.,
+                    (ry + pad) * 2.,
+                ));
+                assert!(
+                    clipped_rect_fits(world, &clips),
+                    "ellipse exceeds its visible canvas: {world:?}"
+                );
+            }
+            Paint::VectorPath {
+                start,
+                segments,
+                stroke,
+                ..
+            } => {
+                let pad = stroke.map_or(0., |(_, w, _)| w * 0.5);
+                let mut min_x = f32::INFINITY;
+                let mut min_y = f32::INFINITY;
+                let mut max_x = f32::NEG_INFINITY;
+                let mut max_y = f32::NEG_INFINITY;
+                let mut add = |x: f32, y: f32| {
+                    let (wx, wy) = mat.pt(x, y);
+                    min_x = min_x.min(wx - pad);
+                    min_y = min_y.min(wy - pad);
+                    max_x = max_x.max(wx + pad);
+                    max_y = max_y.max(wy + pad);
+                };
+                add(start.0, start.1);
+                for seg in segments {
+                    match *seg {
+                        PathSegment::Line(x, y) => add(x, y),
+                        PathSegment::Quad(cx, cy, x, y) => {
+                            add(cx, cy);
+                            add(x, y);
+                        }
+                        PathSegment::Cubic(c1x, c1y, c2x, c2y, x, y) => {
+                            add(c1x, c1y);
+                            add(c2x, c2y);
+                            add(x, y);
+                        }
+                    }
+                }
+                let world = Rect::new(min_x, min_y, (max_x - min_x).max(0.), (max_y - min_y).max(0.));
+                assert!(
+                    clipped_rect_fits(world, &clips),
+                    "vector path exceeds its visible canvas: {world:?}"
+                );
+            }
+            Paint::PushTransform {
+                x,
+                y,
+                angle,
+                scale_x,
+                scale_y,
+            } => {
+                transforms.push(mat.compose(*x, *y, *angle, *scale_x, *scale_y));
+            }
+            Paint::PopTransform => {
+                assert!(transforms.pop().is_some(), "unbalanced scene transform");
+            }
             Paint::Clip(r) => {
-                let effective = clips.last().map_or(*r, |current| current.intersect(*r));
-                assert!(contains(effective), "clip exceeds its canvas: {r:?}");
+                let world = mat.rect(*r);
+                let effective = clips
+                    .last()
+                    .map_or(world, |current| current.intersect(world));
+                assert!(contains(effective), "clip exceeds its canvas: {world:?}");
                 clips.push(effective);
             }
             Paint::Unclip => assert!(clips.pop().is_some(), "unbalanced scene clip"),
             Paint::Line(x, y, x2, y2, _, _) => {
+                let p1 = mat.pt(*x, *y);
+                let p2 = mat.pt(*x2, *y2);
                 let bounds = Rect::new(
-                    (*x).min(*x2),
-                    (*y).min(*y2),
-                    (*x - *x2).abs(),
-                    (*y - *y2).abs(),
+                    p1.0.min(p2.0),
+                    p1.1.min(p2.1),
+                    (p1.0 - p2.0).abs(),
+                    (p1.1 - p2.1).abs(),
                 );
                 assert!(
                     clipped_rect_fits(bounds, &clips),
-                    "line exceeds its visible canvas"
+                    "line exceeds its visible canvas: {bounds:?}"
                 );
             }
             Paint::Opacity(value) => assert!((0. ..=1.).contains(value)),
         }
     }
     assert!(clips.is_empty(), "scene left an active clip");
-    assert!(scene.hits.iter().all(|hit| contains(hit.rect)));
-    assert!(scene.inputs.iter().all(|input| contains(input.rect)));
+    assert!(transforms.is_empty(), "scene left an active transform");
 }

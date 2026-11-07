@@ -131,7 +131,6 @@ pub struct NativeHost {
     settings_visible: bool,
     notch_visible: bool,
     last_language: Option<String>,
-    gesture: (bool, u8, u8),
     settings_scroll_max: f32,
     tray: Win32SystemTray,
     background: BackgroundSampler,
@@ -276,7 +275,6 @@ impl NativeHost {
                 settings_visible: false,
                 notch_visible: false,
                 last_language: None,
-                gesture: (false, 255, 255),
                 settings_scroll_max: 0.,
                 tray,
                 background: BackgroundSampler::default(),
@@ -525,7 +523,10 @@ impl NativeHost {
                             }
                         }
                     } else if hwnd == self.notch {
-                        self.intent(UserIntent::Activate);
+                        let body = self.model.motion.sample(Instant::now()).body();
+                        if Rect::new(body.x, body.y, body.w, body.h.max(10.)).contains(x, y) {
+                            self.intent(UserIntent::Activate);
+                        }
                     }
                 }
                 Event::Up(hwnd, x, y) => {
@@ -1454,24 +1455,8 @@ impl NativeHost {
                     }
                 }
             }
-            if self.model.compact_mascot(now)
-                && (self.model.view == NotchView::Resting || self.model.cursor_near)
-            {
-                let elapsed = now.duration_since(self.model.start).as_secs_f32();
-                let puff = if self.model.dozing && elapsed % 7. < 1.4 {
-                    (elapsed % 7. * 10.) as u8
-                } else {
-                    255
-                };
-                let gesture = (
-                    elapsed > 3.4 && elapsed % 3.4 < 0.28,
-                    puff,
-                    (elapsed / 2.6) as u8 % 4,
-                );
-                if gesture != self.gesture {
-                    self.gesture = gesture;
-                    self.dirty = true;
-                }
+            if !suppressed && self.model.compact_mascot(now) && self.model.animating(now) {
+                self.dirty = true;
             }
             if now.duration_since(self.model.shelf_change) > Duration::from_millis(310) {
                 self.model.previous_shelf.clear();
@@ -1518,8 +1503,39 @@ impl NativeHost {
             || (self.model.settings.desktop.hide_in_fullscreen && self.model.fullscreen);
         if self.dirty && !suppressed {
             let shell = self.model.motion.sample(now);
-            let region_w = ((shell.width + shell.ear * 2.) * self.scale).ceil() as i32;
-            let region_h = (shell.height.max(10.) * self.scale).ceil() as i32;
+            let elapsed = now.duration_since(self.model.view_changed).as_secs_f32();
+            let page_motion = if self.model.settings.desktop.fast_animations {
+                0.143
+            } else {
+                0.26
+            };
+            self.scene = views::notch_scene(&self.model, self.model.view, now);
+            let old_scene = (elapsed < page_motion && self.model.previous_view != self.model.view)
+                .then(|| views::notch_scene(&self.model, self.model.previous_view, now));
+
+            let mut region_w_dips = shell.width + shell.ear * 2.;
+            let mut region_h_dips = shell.height.max(10.);
+            for overlay_bounds in [
+                self.scene.overlay_bounds(),
+                old_scene.as_ref().and_then(Scene::overlay_bounds),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let half_span = (overlay_bounds.x - SURFACE_WIDTH / 2.)
+                    .abs()
+                    .max((overlay_bounds.x + overlay_bounds.w - SURFACE_WIDTH / 2.).abs());
+                let max_width = if self.model.expanded() {
+                    SURFACE_WIDTH
+                } else {
+                    178.
+                };
+                region_w_dips = region_w_dips.max((half_span * 2. + 4.).min(max_width));
+                region_h_dips = region_h_dips
+                    .max((overlay_bounds.y + overlay_bounds.h + 2.).min(SURFACE_HEIGHT));
+            }
+            let region_w = (region_w_dips * self.scale).ceil() as i32;
+            let region_h = (region_h_dips * self.scale).ceil() as i32;
             let (left, _) = crate::infrastructure::windows::window_region::centered_region_edges(
                 (SURFACE_WIDTH * self.scale).ceil() as i32,
                 region_w,
@@ -1534,8 +1550,6 @@ impl NativeHost {
                 }
                 self.region = Some((left, region_w, region_h));
             }
-            let elapsed = now.duration_since(self.model.view_changed).as_secs_f32();
-            self.scene = views::notch_scene(&self.model, self.model.view, now);
             self.access.update(&self.scene, &self.model, self.scale);
             if let Some((owner, _, rect)) = self.keyboard_focus {
                 if owner == self.notch {
@@ -1545,15 +1559,9 @@ impl NativeHost {
             self.surface.begin(None);
             self.surface.shell(shell)?;
             self.surface.clip_shell()?;
-            let page_motion = if self.model.settings.desktop.fast_animations {
-                0.143
-            } else {
-                0.26
-            };
             let slide = is_expanded(self.model.previous_view) && self.model.expanded();
             let blend = cubic_bezier((elapsed / page_motion).clamp(0., 1.), 0.42, 0., 0.58, 1.);
-            if elapsed < page_motion && self.model.previous_view != self.model.view {
-                let old = views::notch_scene(&self.model, self.model.previous_view, now);
+            if let Some(old) = &old_scene {
                 self.surface.paint(
                     &old.paint,
                     1. - blend,
@@ -1596,6 +1604,21 @@ impl NativeHost {
                 ),
             )?;
             self.surface.unclip_shell();
+            if let Some(old) = &old_scene
+                && !old.overlay.is_empty()
+            {
+                self.surface.paint(&old.overlay, 1. - blend, (0., 0.))?;
+            }
+            if let Some((old, start)) = &self.local_transition {
+                let t = start.elapsed().as_secs_f32() / 0.2;
+                if t < 1. && !old.overlay.is_empty() {
+                    self.surface.paint(&old.overlay, (1. - t) * alpha, (0., 0.))?;
+                }
+            }
+            if !self.scene.overlay.is_empty() {
+                self.surface
+                    .paint(&self.scene.overlay, alpha * local_alpha, (0., 0.))?;
+            }
             self.surface.end()?;
             self.inputs.sync(
                 self.notch,
