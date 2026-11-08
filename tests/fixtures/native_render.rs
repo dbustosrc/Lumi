@@ -315,6 +315,13 @@ fn native_scenes_render_review_captures_without_showing_a_window()
         !scene.overlay.is_empty(),
         "fully stalking mascot renders cat ears and rim paws in overlay"
     );
+    assert!(
+        scene
+            .paint
+            .iter()
+            .any(|paint| matches!(paint, Paint::Ellipse { color: 0x748e38, .. })),
+        "dilated mascot eyes render the olive-green iris"
+    );
     render_notch(
         &mut surface,
         &model,
@@ -473,6 +480,40 @@ fn native_scenes_render_review_captures_without_showing_a_window()
         output.join("notch").join("focus-hud-100.png"),
     )?;
     model.focus_notice = None;
+
+    model.apply(
+        crate::application::presenter::ViewUpdate::Hud {
+            title_key: "desktopUi.water-reminder",
+            detail: String::new(),
+            level: None,
+            reminder: false,
+            alert: true,
+        },
+        now - Duration::from_millis(900),
+    );
+    render_notch(
+        &mut surface,
+        &model,
+        NotchView::Hud,
+        now,
+        1.0,
+        output.join("notch").join("water-reminder-hud-100.png"),
+    )?;
+    model.hud_mascot_clip = None;
+    model.hud_alert = false;
+
+    model.view = NotchView::Closed;
+    model.motion = Motion::new(NotchView::Closed);
+    model.shelf_drag = true;
+    render_notch(
+        &mut surface,
+        &model,
+        NotchView::Closed,
+        now,
+        1.0,
+        output.join("notch").join("compact-shelf-drag-mascot-100.png"),
+    )?;
+    model.shelf_drag = false;
 
     model.power = PowerStatus {
         has_battery: true,

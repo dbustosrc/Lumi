@@ -40,7 +40,7 @@ fn branding_catalogs_use_lumi_and_mimo_in_english_and_spanish() {
         assert!(about.contains("Lumi"));
     }
 
-    assert_eq!(env!("CARGO_PKG_VERSION"), "1.1.0");
+    assert_eq!(env!("CARGO_PKG_VERSION"), "1.3.0");
 }
 
 #[test]

@@ -173,6 +173,52 @@ fn mascot_visuals_only_render_in_a_stable_compact_capsule() {
     closing.start = during_close;
     let scene = views::notch_scene(&closing, NotchView::Closed, during_close);
     assert!(!scene_has_mascot_visual(&scene));
+
+    // Unified Peeks render Mimo live inside scene.paint (keeping scene.overlay empty)
+    // and consume the matching queued reaction so it does not replay upon closing.
+    let mut peek_charging = UiModel::new(AppSettings::default());
+    peek_charging.mascot = true;
+    let t_peek = Instant::now();
+    peek_charging.apply(
+        ViewUpdate::Power(PowerStatus {
+            has_battery: true,
+            is_plugged_in: false,
+            percent: 60,
+        }),
+        t_peek,
+    );
+    peek_charging.apply(
+        ViewUpdate::Power(PowerStatus {
+            has_battery: true,
+            is_plugged_in: true,
+            percent: 61,
+        }),
+        t_peek + Duration::from_secs(1),
+    );
+    assert!(peek_charging.choreographer.has_pending(MascotClip::ChargerZap));
+    peek_charging.apply(
+        ViewUpdate::View(NotchView::ChargingPeek),
+        t_peek + Duration::from_secs(1),
+    );
+    assert!(
+        !peek_charging.choreographer.has_pending(MascotClip::ChargerZap),
+        "ChargingPeek claims ChargerZap so it does not replay after closing"
+    );
+    let charging_scene = views::notch_scene(
+        &peek_charging,
+        NotchView::ChargingPeek,
+        t_peek + Duration::from_millis(1500),
+    );
+    assert!(scene_has_mascot_visual(&charging_scene));
+    assert!(charging_scene.overlay.is_empty());
+    peek_charging.apply(
+        ViewUpdate::View(NotchView::Closed),
+        t_peek + Duration::from_secs(4),
+    );
+    assert!(
+        !peek_charging
+            .advance_mascot_reactions(t_peek + Duration::from_secs(5))
+    );
 }
 
 #[test]
@@ -425,7 +471,7 @@ fn mascot_choreographer_prevents_overlaps_and_queues_event_reactions() {
     model.dozing = true;
     let t0 = Instant::now();
 
-    // 1. Greeting wave is immediately preempted when cursor enters stalking range.
+    // 1. Active greeting wave is protected from cursor-proximity interruption; paw swipe waits.
     model.wake_mascot(t0);
     let greet_at = t0 + MASCOT_WAKE_DURATION + Duration::from_millis(300);
     assert!(model.greeting_progress(greet_at).is_some());
@@ -434,12 +480,24 @@ fn mascot_choreographer_prevents_overlaps_and_queues_event_reactions() {
         MASCOT_PROXIMITY_DIPS,
         greet_at,
     ));
-    assert!(model.greeting_progress(greet_at).is_none());
-    assert!(model.choreographer.paw_swipe(greet_at).is_some());
-    model.observe_mascot_cursor(None, MASCOT_PROXIMITY_DIPS, greet_at + Duration::from_secs(1));
+    assert!(model.greeting_progress(greet_at).is_some());
+    assert!(model.choreographer.paw_swipe(greet_at).is_none());
+    let after_greet = t0 + MASCOT_WAKE_DURATION + MASCOT_GREETING_DURATION + Duration::from_millis(20);
+    assert!(model.observe_mascot_cursor(
+        Some((SURFACE_WIDTH / 2. + 24., 44.)),
+        MASCOT_PROXIMITY_DIPS,
+        after_greet,
+    ));
+    assert!(model.choreographer.paw_swipe(after_greet).is_some());
+    model.observe_mascot_cursor(
+        None,
+        MASCOT_PROXIMITY_DIPS,
+        after_greet + Duration::from_secs(1),
+    );
 
-    // 2. Concurrent P3 reactions queue in FIFO order instead of overlapping.
-    let q_at = greet_at + Duration::from_secs(2);
+    // 2. Concurrent P3 reactions queue in FIFO order instead of overlapping, and pause during
+    // transient non-alert HUDs (e.g. Volume) instead of expiring unseen.
+    let q_at = after_greet + Duration::from_secs(2);
     model.apply(
         ViewUpdate::Headphones(Some(HeadphoneStatus {
             name: "Studio".into(),
@@ -455,7 +513,30 @@ fn mascot_choreographer_prevents_overlaps_and_queues_event_reactions() {
 
     let after_hp = q_at + MASCOT_HEADPHONES_DURATION + Duration::from_millis(10);
     assert!(model.advance_mascot_reactions(after_hp));
-    assert!(model.bell_progress(after_hp + Duration::from_millis(100)).is_some());
+    let before_hud = after_hp + Duration::from_millis(700);
+    let progress_before_hud = model.bell_progress(before_hud).unwrap();
+    assert!((progress_before_hud - 0.25).abs() < 0.02);
+
+    model.apply(
+        ViewUpdate::Hud {
+            title_key: "desktopUi.volume",
+            detail: "60%".into(),
+            level: Some(0.6),
+            reminder: false,
+            alert: false,
+        },
+        before_hud,
+    );
+    model.apply(ViewUpdate::View(NotchView::Hud), before_hud);
+    let hud_close = before_hud + Duration::from_millis(1500);
+    model.apply(ViewUpdate::View(NotchView::Closed), hud_close);
+    let resumed_at = hud_close + Duration::from_millis(600);
+    assert!(model.advance_mascot_reactions(resumed_at));
+    let progress_resumed = model.bell_progress(resumed_at).unwrap();
+    assert!(
+        (progress_resumed - progress_before_hud).abs() < 0.02,
+        "BellAlert pauses during Volume HUD and resumes from {progress_before_hud}, got {progress_resumed}"
+    );
 
     // 3. Initial state hydration does not fire reactions; subsequent state deltas do.
     let mut events = UiModel::new(AppSettings::default());
@@ -1102,6 +1183,7 @@ fn scene_has_mascot_visual(scene: &Scene) -> bool {
             Paint::Bitmap(rect, width, height, _) => {
                 *width == 16 && *height == 16 && rect.y == 6. && rect.h == 24.
             }
+            Paint::Ellipse { .. } | Paint::VectorPath { .. } => true,
             _ => false,
         })
 }

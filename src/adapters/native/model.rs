@@ -14,8 +14,8 @@ use crate::domain::todo::{TodoProgress, TodoTask};
 use crate::domain::water::WaterState;
 
 #[cfg(test)]
-pub use super::mascot::{MascotClip, VARIANTS_PER_CLIP};
-pub use super::mascot::{CursorSample, MascotChoreographer, MascotLiveState};
+pub use super::mascot::VARIANTS_PER_CLIP;
+pub use super::mascot::{CursorSample, MascotChoreographer, MascotClip, MascotLiveState};
 
 pub const MASCOT_PROXIMITY_DIPS: f32 = 96. * 5. / 2.54;
 
@@ -154,6 +154,17 @@ impl Motion {
     pub fn running(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.start) < self.duration
     }
+    pub fn compact_ready(&self, now: Instant) -> bool {
+        if !self.running(now) {
+            return true;
+        }
+        let closed = Shell::for_view(NotchView::Closed, false);
+        if self.to != closed {
+            return false;
+        }
+        let current = self.sample(now);
+        (current.width - closed.width).abs() <= 6. && (current.height - closed.height).abs() <= 2.
+    }
     pub fn sample(&self, now: Instant) -> Shell {
         if !self.running(now) {
             return self.to;
@@ -251,6 +262,7 @@ pub struct UiModel {
     pub hud_level: Option<f32>,
     pub hud_alert: bool,
     pub hud_reminder: bool,
+    pub hud_mascot_clip: Option<MascotClip>,
     pub water_error: Option<&'static str>,
     pub focus_notice: Option<(FocusPhase, u64)>,
     pub mascot: bool,
@@ -335,6 +347,7 @@ impl UiModel {
             hud_level: None,
             hud_alert: false,
             hud_reminder: false,
+            hud_mascot_clip: None,
             water_error: None,
             focus_notice: None,
             mascot: settings.is_mascot_enabled,
@@ -394,6 +407,7 @@ impl UiModel {
                         self.settings.desktop.fast_animations,
                         now,
                     );
+                    self.sync_mascot_stage(now);
                 }
             }
             ViewUpdate::Clock(value) => self.clock = value,
@@ -474,10 +488,12 @@ impl UiModel {
                 self.choreographer
                     .on_power_updated(value, self.mascot, now);
                 self.power = value;
+                self.sync_mascot_stage(now);
             }
             ViewUpdate::Headphones(value) => {
                 self.choreographer.on_headphones_updated(value.is_some());
                 self.headphones = value;
+                self.sync_mascot_stage(now);
             }
             ViewUpdate::MediaConnection(value) => self.connection = value,
             ViewUpdate::Utility(value) => {
@@ -514,13 +530,16 @@ impl UiModel {
                     self.wake_mascot(now);
                 }
                 self.dozing = is_dozing;
+                self.sync_mascot_stage(now);
             }
             ViewUpdate::FocusReminder { phase, seconds } => {
                 self.choreographer
                     .on_focus_reminder(phase, self.mascot, now);
                 self.focus_notice = Some((phase, seconds));
+                self.hud_mascot_clip = None;
                 self.hud_alert = true;
                 self.alert_started = now;
+                self.sync_mascot_stage(now);
             }
             ViewUpdate::Hud {
                 title_key,
@@ -537,8 +556,14 @@ impl UiModel {
                 self.hud_level = level;
                 self.hud_alert = alert;
                 self.hud_reminder = reminder;
+                self.hud_mascot_clip = alert.then_some(match title_key {
+                    "desktopUi.water-reminder" => MascotClip::WaterSip,
+                    "desktopUi.task-ready" => MascotClip::TaskCheer,
+                    _ => MascotClip::BellAlert,
+                });
                 self.focus_notice = None;
                 self.alert_started = now;
+                self.sync_mascot_stage(now);
             }
             ViewUpdate::TextInputFocus(value) => self.input_locked = value,
             ViewUpdate::CapsLock(enabled) => {
@@ -547,7 +572,9 @@ impl UiModel {
                 self.hud_level = None;
                 self.hud_alert = false;
                 self.hud_reminder = false;
+                self.hud_mascot_clip = None;
                 self.focus_notice = None;
+                self.sync_mascot_stage(now);
             }
             ViewUpdate::ReminderSound => {}
         }
@@ -697,7 +724,36 @@ impl UiModel {
         self.mascot
             && !self.fullscreen
             && matches!(self.view, NotchView::Closed | NotchView::Resting)
-            && !self.motion.running(now)
+            && self.motion.compact_ready(now)
+    }
+    pub fn peek_mascot_clip_for(&self, view: NotchView) -> Option<MascotClip> {
+        if !self.mascot || self.fullscreen {
+            return None;
+        }
+        match view {
+            NotchView::ChargingPeek if self.power.is_plugged_in && self.power.has_battery => {
+                Some(MascotClip::ChargerZap)
+            }
+            NotchView::HeadphonesPeek if self.headphones.is_some() => Some(MascotClip::Headphones),
+            NotchView::Hud => {
+                if let Some((phase, _)) = self.focus_notice {
+                    Some(if phase == FocusPhase::Focus {
+                        MascotClip::PomodoroStart
+                    } else {
+                        MascotClip::PomodoroComplete
+                    })
+                } else {
+                    self.hud_mascot_clip
+                }
+            }
+            _ => None,
+        }
+    }
+    fn sync_mascot_stage(&mut self, now: Instant) {
+        let peek_clip = self.peek_mascot_clip_for(self.view);
+        let is_compact = self.compact_mascot(now);
+        self.choreographer
+            .sync_stage(peek_clip, is_compact, now, &mut self.dozing);
     }
     pub fn wake_mascot(&mut self, now: Instant) {
         self.choreographer.wake(now, self.mascot, &mut self.dozing);

@@ -1455,7 +1455,7 @@ impl NativeHost {
                     }
                 }
             }
-            if !suppressed && self.model.compact_mascot(now) && self.model.animating(now) {
+            if !suppressed && self.model.animating(now) {
                 self.dirty = true;
             }
             if now.duration_since(self.model.shelf_change) > Duration::from_millis(310) {

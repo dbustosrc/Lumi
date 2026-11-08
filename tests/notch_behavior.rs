@@ -482,4 +482,23 @@ fn open_lock_and_settings_changes_preserve_the_open_page_and_existing_priorities
     context.page = NotchPage::Headphones;
     context.is_interaction_locked = true;
     assert_eq!(resolve_view(&context), NotchView::Headphones);
+
+    // With Mimo enabled while closed, file drag and voice capture stay in the compact capsule
+    // so Mimo's live animations are visible; if already open, the active page is preserved.
+    context.is_interaction_locked = false;
+    context.is_mascot_enabled = true;
+    context.is_minimal_notch = true;
+    context.is_quiet = true;
+    context.is_playing = false;
+    context.is_file_drag_over = true;
+    assert_eq!(resolve_view(&context), NotchView::Closed);
+    context.is_hovered = true;
+    assert_eq!(resolve_view(&context), NotchView::Shelf);
+    context.is_hovered = false;
+    context.is_file_drag_over = false;
+    context.is_voice_busy = true;
+    assert_eq!(resolve_view(&context), NotchView::Closed);
+    context.is_hovered = true;
+    context.page = NotchPage::Todo;
+    assert_eq!(resolve_view(&context), NotchView::Todo);
 }

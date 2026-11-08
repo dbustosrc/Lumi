@@ -13,6 +13,8 @@ pub const MASCOT_HEADPHONES_DURATION: Duration = Duration::from_millis(3600);
 pub const VARIANTS_PER_CLIP: u8 = 3;
 
 const REACTION_DURATION: Duration = Duration::from_millis(2800);
+const OPEN_PANEL_REACTION_TTL: Duration = Duration::from_secs(15);
+const PAUSED_CLIP_TTL: Duration = Duration::from_secs(15);
 const STALK_TRANSITION: Duration = Duration::from_millis(260);
 const PAW_SWIPE_DURATION: Duration = Duration::from_millis(420);
 const PAW_SWIPE_COOLDOWN: Duration = Duration::from_millis(950);
@@ -106,6 +108,70 @@ struct ActiveClip {
     clip: MascotClip,
     variant: u8,
     chained_variant: u8,
+    elapsed_before: Duration,
+    resumed_at: Option<Instant>,
+    paused_at: Option<Instant>,
+}
+
+impl ActiveClip {
+    fn new_running(clip: MascotClip, variant: u8, chained_variant: u8, now: Instant) -> Self {
+        Self {
+            clip,
+            variant,
+            chained_variant,
+            elapsed_before: Duration::ZERO,
+            resumed_at: Some(now),
+            paused_at: None,
+        }
+    }
+
+    fn total_duration(self) -> Duration {
+        if self.clip == MascotClip::WakeRubEye {
+            MASCOT_WAKE_DURATION + MASCOT_GREETING_DURATION
+        } else {
+            self.clip.duration()
+        }
+    }
+
+    fn elapsed(self, now: Instant) -> Duration {
+        match self.resumed_at {
+            Some(resumed) => self.elapsed_before + now.saturating_duration_since(resumed),
+            None => self.elapsed_before,
+        }
+    }
+
+    fn pause_expired(self, now: Instant) -> bool {
+        self.paused_at
+            .is_some_and(|paused| now.saturating_duration_since(paused) > PAUSED_CLIP_TTL)
+    }
+
+    fn sync_visibility(&mut self, is_visible: bool, now: Instant) -> (bool, bool) {
+        if is_visible {
+            if self.resumed_at.is_none() {
+                if self.pause_expired(now) {
+                    return (false, true);
+                }
+                self.resumed_at = Some(now);
+                self.paused_at = None;
+                return (true, false);
+            }
+            (false, false)
+        } else {
+            if let Some(resumed) = self.resumed_at.take() {
+                self.elapsed_before += now.saturating_duration_since(resumed);
+                self.paused_at = Some(now);
+            } else if self.pause_expired(now) {
+                return (false, true);
+            }
+            (false, false)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PeekStageClip {
+    clip: MascotClip,
+    variant: u8,
     started_at: Instant,
 }
 
@@ -118,6 +184,8 @@ struct QueuedReaction {
 
 pub struct MascotChoreographer {
     active: Option<ActiveClip>,
+    peek_active: bool,
+    last_peek: Option<PeekStageClip>,
     queue: VecDeque<QueuedReaction>,
     next_variant: [u8; CLIP_KIND_COUNT],
     is_cursor_near: bool,
@@ -142,6 +210,8 @@ impl MascotChoreographer {
         let settled = now - Duration::from_secs(2);
         Self {
             active: None,
+            peek_active: false,
+            last_peek: None,
             queue: VecDeque::with_capacity(MAX_QUEUED_REACTIONS),
             next_variant: [0; CLIP_KIND_COUNT],
             is_cursor_near: false,
@@ -177,17 +247,17 @@ impl MascotChoreographer {
     #[cfg(test)]
     pub fn start_clip_variant(&mut self, clip: MascotClip, variant: u8, started_at: Instant) {
         let v = variant % VARIANTS_PER_CLIP;
-        self.active = Some(ActiveClip {
-            clip,
-            variant: v,
-            chained_variant: v,
-            started_at,
-        });
+        self.active = Some(ActiveClip::new_running(clip, v, v, started_at));
     }
 
     #[cfg(test)]
     pub fn clear_active(&mut self) {
         self.active = None;
+    }
+
+    fn has_active_clip(&self, now: Instant) -> bool {
+        self.active
+            .is_some_and(|a| !a.pause_expired(now) && a.elapsed(now) < a.total_duration())
     }
 
     pub fn has_pending(&self, clip: MascotClip) -> bool {
@@ -197,20 +267,19 @@ impl MascotChoreographer {
     #[cfg(test)]
     pub fn active_started_at(&self, clip: MascotClip, now: Instant) -> Option<Instant> {
         let active = self.active?;
-        if active.clip == clip {
-            let elapsed = now.saturating_duration_since(active.started_at);
-            if elapsed < clip.duration() {
-                return Some(active.started_at);
-            }
+        if active.pause_expired(now) {
+            return None;
+        }
+        let elapsed = active.elapsed(now);
+        if active.clip == clip && elapsed < clip.duration() {
+            return now.checked_sub(elapsed);
         }
         if clip == MascotClip::GreetingWave
             && active.clip == MascotClip::WakeRubEye
-            && !self.is_cursor_near
+            && elapsed >= MASCOT_WAKE_DURATION
+            && elapsed < MASCOT_WAKE_DURATION + MASCOT_GREETING_DURATION
         {
-            let greet_start = active.started_at + MASCOT_WAKE_DURATION;
-            if now >= greet_start && now < greet_start + MASCOT_GREETING_DURATION {
-                return Some(greet_start);
-            }
+            return now.checked_sub(elapsed - MASCOT_WAKE_DURATION);
         }
         None
     }
@@ -225,14 +294,14 @@ impl MascotChoreographer {
             return None;
         }
         let active = self.active?;
+        if active.pause_expired(now) {
+            return None;
+        }
         if active.clip == MascotClip::Headphones && !has_headphones {
             return None;
         }
+        let elapsed = active.elapsed(now);
         if active.clip == MascotClip::WakeRubEye {
-            if self.is_cursor_near {
-                return None;
-            }
-            let elapsed = now.saturating_duration_since(active.started_at);
             if elapsed < MASCOT_WAKE_DURATION {
                 return Some((
                     MascotClip::WakeRubEye,
@@ -250,10 +319,6 @@ impl MascotChoreographer {
             }
             return None;
         }
-        if active.clip == MascotClip::GreetingWave && self.is_cursor_near {
-            return None;
-        }
-        let elapsed = now.saturating_duration_since(active.started_at);
         let duration = active.clip.duration();
         (elapsed < duration).then(|| {
             (
@@ -262,6 +327,66 @@ impl MascotChoreographer {
                 elapsed.as_secs_f32() / duration.as_secs_f32(),
             )
         })
+    }
+
+    pub fn sync_stage(
+        &mut self,
+        peek_clip: Option<MascotClip>,
+        is_compact: bool,
+        now: Instant,
+        is_dozing: &mut bool,
+    ) {
+        if let Some(clip) = peek_clip {
+            *is_dozing = false;
+            let mut claimed_variant = None;
+            if self.active.is_some_and(|active| active.clip == clip) {
+                claimed_variant = self.active.take().map(|active| active.variant);
+            } else if let Some(active) = &mut self.active {
+                let (_, expired) = active.sync_visibility(false, now);
+                if expired {
+                    self.active = None;
+                }
+            }
+            if let Some(pos) = self.queue.iter().position(|entry| entry.clip == clip)
+                && let Some(removed) = self.queue.remove(pos)
+            {
+                claimed_variant.get_or_insert(removed.variant);
+            }
+            let reuse_running =
+                self.peek_active && self.last_peek.is_some_and(|stage| stage.clip == clip);
+            if !reuse_running {
+                let variant = claimed_variant.unwrap_or_else(|| self.take_variant(clip));
+                self.last_peek = Some(PeekStageClip {
+                    clip,
+                    variant,
+                    started_at: now,
+                });
+            }
+            self.peek_active = true;
+        } else {
+            self.peek_active = false;
+            if let Some(active) = &mut self.active {
+                let (_, expired) = active.sync_visibility(is_compact, now);
+                if expired {
+                    self.active = None;
+                }
+            }
+        }
+    }
+
+    pub fn resolved_peek_clip(&self, expected: MascotClip, now: Instant) -> (u8, f32) {
+        if let Some(stage) = self.last_peek.filter(|stage| stage.clip == expected) {
+            let elapsed = now.saturating_duration_since(stage.started_at).as_secs_f32();
+            let duration = expected.duration().as_secs_f32().max(0.001);
+            let progress = if elapsed < duration {
+                elapsed / duration
+            } else {
+                (elapsed / duration).fract()
+            };
+            (stage.variant, progress)
+        } else {
+            (0, 0.45)
+        }
     }
 
     #[cfg(test)]
@@ -300,18 +425,20 @@ impl MascotChoreographer {
             return;
         }
         *is_dozing = false;
-        let has_priority_clip = self
-            .active
-            .is_some_and(|a| !a.clip.is_wake_sequence() && now < a.started_at + a.clip.duration());
-        if !self.is_cursor_near && !has_priority_clip {
+        let has_priority_clip = self.active.is_some_and(|a| {
+            !a.clip.is_wake_sequence()
+                && !a.pause_expired(now)
+                && a.elapsed(now) < a.total_duration()
+        });
+        if !self.is_cursor_near && !has_priority_clip && !self.peek_active {
             let wake_variant = self.take_variant(MascotClip::WakeRubEye);
             let greet_variant = self.take_variant(MascotClip::GreetingWave);
-            self.active = Some(ActiveClip {
-                clip: MascotClip::WakeRubEye,
-                variant: wake_variant,
-                chained_variant: greet_variant,
-                started_at: now,
-            });
+            self.active = Some(ActiveClip::new_running(
+                MascotClip::WakeRubEye,
+                wake_variant,
+                greet_variant,
+                now,
+            ));
         }
     }
 
@@ -321,9 +448,9 @@ impl MascotChoreographer {
         now: Instant,
         expires_after: Option<Duration>,
     ) {
-        let already_active = self
-            .active
-            .is_some_and(|a| a.clip == clip && now < a.started_at + a.clip.duration());
+        let already_active = self.active.is_some_and(|a| {
+            a.clip == clip && !a.pause_expired(now) && a.elapsed(now) < a.total_duration()
+        }) || (self.peek_active && self.last_peek.is_some_and(|s| s.clip == clip));
         if already_active || self.has_pending(clip) {
             return;
         }
@@ -348,6 +475,8 @@ impl MascotChoreographer {
     ) -> bool {
         if !is_enabled {
             self.active = None;
+            self.peek_active = false;
+            self.last_peek = None;
             self.queue.clear();
             self.paw_swipe_started = None;
             return false;
@@ -356,38 +485,34 @@ impl MascotChoreographer {
             entry.expires_at.is_none_or(|exp| now <= exp)
                 && (entry.clip != MascotClip::Headphones || has_headphones)
         });
-        if let Some(active) = self.active {
-            let expired = if active.clip == MascotClip::WakeRubEye {
-                self.is_cursor_near
-                    || now >= active.started_at + MASCOT_WAKE_DURATION + MASCOT_GREETING_DURATION
-            } else if active.clip == MascotClip::Headphones && !has_headphones {
-                true
-            } else {
-                now >= active.started_at + active.clip.duration()
-            };
-            if expired {
-                self.active = None;
-            }
+        let mut resumed_active = false;
+        if let Some(mut active) = self.active {
+            let (resumed, pause_expired) = active.sync_visibility(is_compact, now);
+            resumed_active = resumed;
+            let expired = pause_expired
+                || (active.clip == MascotClip::Headphones && !has_headphones)
+                || active.elapsed(now) >= active.total_duration();
+            self.active = (!expired).then_some(active);
         }
         if !is_compact {
             return false;
         }
-        let blocking_reaction = self
-            .active
-            .is_some_and(|a| !a.clip.is_wake_sequence() && now < a.started_at + a.clip.duration());
+        let blocking_reaction = self.active.is_some_and(|a| {
+            !a.clip.is_wake_sequence() && a.elapsed(now) < a.total_duration()
+        });
         if blocking_reaction {
-            return false;
+            return resumed_active;
         }
         let Some(next) = self.queue.pop_front() else {
-            return false;
+            return resumed_active;
         };
         *is_dozing = false;
-        self.active = Some(ActiveClip {
-            clip: next.clip,
-            variant: next.variant,
-            chained_variant: next.variant,
-            started_at: now,
-        });
+        self.active = Some(ActiveClip::new_running(
+            next.clip,
+            next.variant,
+            next.variant,
+            now,
+        ));
         true
     }
 
@@ -454,9 +579,10 @@ impl MascotChoreographer {
         });
         let mut swipe_triggered = false;
         if let Some((x, y)) = nearby {
-            let can_swipe = self
-                .paw_swipe_started
-                .is_none_or(|s| now.saturating_duration_since(s) >= PAW_SWIPE_COOLDOWN);
+            let can_swipe = !self.has_active_clip(now)
+                && self
+                    .paw_swipe_started
+                    .is_none_or(|s| now.saturating_duration_since(s) >= PAW_SWIPE_COOLDOWN);
             if dist_to_capsule > 2. && dist_to_capsule <= PAW_SWIPE_DISTANCE && y >= 18. && can_swipe
             {
                 self.paw_swipe_started = Some(now);
@@ -485,13 +611,8 @@ impl MascotChoreographer {
             self.gaze_changed = now;
             self.is_cursor_near = near;
         }
-        if near {
-            if sample.is_enabled && *is_dozing {
-                *is_dozing = false;
-            }
-            if self.active.is_some_and(|a| a.clip.is_wake_sequence()) {
-                self.active = None;
-            }
+        if near && sample.is_enabled && *is_dozing {
+            *is_dozing = false;
         }
         changed
     }
@@ -531,14 +652,14 @@ impl MascotChoreographer {
             && is_enabled
             && consumed_ml > prev
         {
-            self.enqueue(MascotClip::WaterSip, now, Some(Duration::from_secs(12)));
+            self.enqueue(MascotClip::WaterSip, now, Some(OPEN_PANEL_REACTION_TTL));
         }
         self.prev_water_ml = Some(consumed_ml);
     }
 
     pub fn on_water_reminder(&mut self, is_enabled: bool, now: Instant) {
         if is_enabled {
-            self.enqueue(MascotClip::WaterSip, now, Some(Duration::from_secs(12)));
+            self.enqueue(MascotClip::WaterSip, now, Some(OPEN_PANEL_REACTION_TTL));
         }
     }
 
@@ -548,7 +669,7 @@ impl MascotChoreographer {
             && !was_running
             && focus_running
         {
-            self.enqueue(MascotClip::PomodoroStart, now, Some(Duration::from_secs(12)));
+            self.enqueue(MascotClip::PomodoroStart, now, Some(OPEN_PANEL_REACTION_TTL));
         }
         self.prev_focus_running = Some(focus_running);
     }
@@ -569,7 +690,7 @@ impl MascotChoreographer {
             && is_enabled
             && count > prev
         {
-            self.enqueue(MascotClip::FileCatch, now, Some(Duration::from_secs(12)));
+            self.enqueue(MascotClip::FileCatch, now, Some(OPEN_PANEL_REACTION_TTL));
         }
         self.prev_shelf_count = Some(count);
     }
@@ -586,7 +707,7 @@ impl MascotChoreographer {
             && completed > prev_done
             && total >= prev_total
         {
-            self.enqueue(MascotClip::TaskCheer, now, Some(Duration::from_secs(12)));
+            self.enqueue(MascotClip::TaskCheer, now, Some(OPEN_PANEL_REACTION_TTL));
         }
         self.prev_tasks_counts = Some((completed, total));
     }
@@ -598,7 +719,7 @@ impl MascotChoreographer {
             && status.is_plugged_in
             && status.has_battery
         {
-            self.enqueue(MascotClip::ChargerZap, now, Some(Duration::from_secs(12)));
+            self.enqueue(MascotClip::ChargerZap, now, Some(OPEN_PANEL_REACTION_TTL));
         }
         self.prev_plugged_in = Some(status.is_plugged_in);
     }
@@ -606,7 +727,7 @@ impl MascotChoreographer {
     pub fn on_voice_updated(&mut self, state: VoiceState, is_enabled: bool, now: Instant) {
         let is_busy = matches!(state, VoiceState::Recording | VoiceState::Transcribing);
         if self.prev_voice_busy && state == VoiceState::Idle && is_enabled {
-            self.enqueue(MascotClip::VoiceReaction, now, Some(Duration::from_secs(10)));
+            self.enqueue(MascotClip::VoiceReaction, now, Some(OPEN_PANEL_REACTION_TTL));
         } else if self.prev_voice_busy && !is_busy {
             let _ = self.take_variant(MascotClip::VoiceReaction);
         }
@@ -629,6 +750,9 @@ impl MascotChoreographer {
     }
 
     pub fn is_animating(&self, now: Instant, state: MascotLiveState) -> bool {
+        if self.peek_active {
+            return true;
+        }
         if !state.is_compact {
             return false;
         }

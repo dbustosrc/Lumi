@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0
+
+- Added Mimo animations to quick panels for Bluetooth headphones, charging, and reminders.
+- Kept the notch compact while Mimo reacts to file drops and voice capture when the full panel is closed.
+- Improved Mimo's eye animations and how reactions pause and resume across notch transitions.
+
 ## 1.2.0
 
 - Reworked Mimo's compact-notch animations for waking up, stalking the cursor, and reacting to Bluetooth headphones and notification banners.

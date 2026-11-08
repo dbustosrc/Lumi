@@ -937,8 +937,7 @@ fn draw_charger_battery_hug(scene: &mut Scene, body: Rect, p: f32) {
         draw_ambient_glow(&mut inside, body, 1.0);
         if bars < 3 {
             for side in [-1_f32, 1.] {
-                let mut spec = EyeSpec::dilated(cx - 4. + side * 12.0, 15.8, 4.9, 6.4, 1.4, 0.4);
-                spec.color = 0xdcfce7;
+                let spec = EyeSpec::dilated(cx - 4. + side * 12.0, 15.8, 4.9, 6.4, 1.4, 0.4);
                 draw_expressive_eye(&mut inside, spec, 1.0);
             }
         } else {
@@ -980,8 +979,7 @@ fn draw_charger_power_aura(scene: &mut Scene, body: Rect, p: f32) {
         let mut inside = PaintLayer(&mut scene.paint);
         draw_ambient_glow(&mut inside, body, 1.0);
         for side in [-1_f32, 1.] {
-            let mut spec = EyeSpec::dilated(cx + side * 13.5, 15.0 - pulse * 1.2, 5.2, 6.8, 0., -0.5);
-            spec.color = 0xa7f3d0;
+            let spec = EyeSpec::dilated(cx + side * 13.5, 15.0 - pulse * 1.2, 5.2, 6.8, 0., -0.5);
             draw_expressive_eye(&mut inside, spec, 1.0);
         }
         draw_blush(&mut inside, cx, 21.2, 19.5, 0.55 * fade);

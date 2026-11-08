@@ -19,6 +19,7 @@ use crate::domain::notch::{NotchContext, NotchPage, NotchView, Peek, resolve_vie
 use crate::domain::ports::PortError;
 
 const PEEK_VISIBLE_FOR: Duration = Duration::from_millis(3500);
+const HUD_VISIBLE_FOR: Duration = Duration::from_millis(1500);
 const POST_DROP_VISIBLE_FOR: Duration = Duration::from_millis(1600);
 const DOZE_AFTER_REST: Duration = Duration::from_secs(120);
 const LYRICS_TICK: Duration = Duration::from_millis(200);
@@ -160,7 +161,7 @@ impl NotchController {
                 if self.desktop.hud_caps_lock {
                     self.context.is_actionable_alert = false;
                     self.presenter.apply(ViewUpdate::CapsLock(enabled));
-                    self.show_peek(Peek::Hud);
+                    self.show_peek_for(Peek::Hud, HUD_VISIBLE_FOR);
                 }
             }
             AppEvent::InputLanguage(language) => {
@@ -197,7 +198,7 @@ impl NotchController {
             AppEvent::MascotActivity => self.keep_mascot_awake(Instant::now()),
             AppEvent::ShelfTextDropped(text) => {
                 self.on_file_drag_hover(false);
-                self.reveal_shelf_briefly();
+                self.on_drop_received();
                 let result = self.services.shelf.add_text(text);
                 self.after_shelf_mutation(result);
             }
@@ -406,7 +407,7 @@ impl NotchController {
 
     fn on_files_dropped(&mut self, paths: &[PathBuf]) {
         self.on_file_drag_hover(false);
-        self.reveal_shelf_briefly();
+        self.on_drop_received();
         let result = self.services.shelf.add_paths(paths);
         self.after_shelf_mutation(result);
     }
@@ -415,6 +416,17 @@ impl NotchController {
         self.reveal_shelf_briefly();
         let result = self.services.shelf.add_paths(paths);
         self.after_shelf_mutation(result);
+    }
+
+    fn on_drop_received(&mut self) {
+        self.mark_activity();
+        self.context.page = NotchPage::Shelf;
+        let is_open = self.context.is_hovered || self.context.is_interaction_locked;
+        if !self.context.is_mascot_enabled || is_open {
+            self.hover.reveal_for(Instant::now(), POST_DROP_VISIBLE_FOR);
+        } else {
+            self.keep_mascot_awake(Instant::now());
+        }
     }
 
     fn reveal_shelf_briefly(&mut self) {
@@ -526,7 +538,7 @@ impl NotchController {
             reminder: false,
             alert: false,
         });
-        self.show_peek(Peek::Hud);
+        self.show_peek_for(Peek::Hud, HUD_VISIBLE_FOR);
     }
 
     fn show_reminder(&mut self, notice: ReminderNotice) {
@@ -560,6 +572,8 @@ impl NotchController {
     }
 
     fn on_transcribed(&mut self, result: Result<String, PortError>) {
+        self.mark_activity();
+        self.keep_mascot_awake(Instant::now());
         if let Some(text) = self.services.voice.on_transcribed(result) {
             let added = self.services.todo.add(&text);
             let error_key = added.as_ref().err().map(TodoServiceError::message_key);
@@ -617,8 +631,12 @@ impl NotchController {
     }
 
     fn show_peek(&mut self, peek: Peek) {
+        self.show_peek_for(peek, PEEK_VISIBLE_FOR);
+    }
+
+    fn show_peek_for(&mut self, peek: Peek, duration: Duration) {
         self.context.peek = Some(peek);
-        self.peek_until = Some(Instant::now() + PEEK_VISIBLE_FOR);
+        self.peek_until = Some(Instant::now() + duration);
         self.mark_activity();
     }
 
@@ -706,12 +724,12 @@ impl NotchController {
         self.refresh_clock();
         self.refresh_media(now);
         self.refresh_rest(now);
-        self.refresh_view();
         let voice = self.services.voice.state();
         if self.voice_state != Some(voice) {
             self.voice_state = Some(voice);
             self.presenter.apply(ViewUpdate::Voice(voice));
         }
+        self.refresh_view();
     }
 
     fn refresh_hover(&mut self, now: Instant) {
@@ -813,8 +831,11 @@ impl NotchController {
     }
 
     fn refresh_view(&mut self) {
-        self.context.is_interaction_locked =
-            self.is_text_editing || self.is_outbound_dragging || self.services.voice.is_busy();
+        let voice_busy = self.services.voice.is_busy();
+        self.context.is_voice_busy = voice_busy;
+        self.context.is_interaction_locked = self.is_text_editing
+            || self.is_outbound_dragging
+            || (voice_busy && !self.context.is_mascot_enabled);
         let view = resolve_view(&self.context);
         if view != self.view {
             self.view = view;

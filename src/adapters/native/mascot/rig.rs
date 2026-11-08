@@ -6,6 +6,9 @@ use super::super::scene::{Paint, PathSegment};
 pub const IVORY: u32 = 0xfffdf7;
 pub const PURE_WHITE: u32 = 0xffffff;
 pub const PUPIL_DARK: u32 = 0x0b1120;
+pub const IRIS_OLIVE_RING: u32 = 0x4a5a23;
+pub const IRIS_OLIVE_BASE: u32 = 0x748e38;
+pub const IRIS_OLIVE_GLOW: u32 = 0x9bb556;
 pub const EYE_HALO: u32 = 0x78beff;
 pub const BLUSH_ROSE: u32 = 0xff82a5;
 pub const PAW_BEAN: u32 = 0xfda4af;
@@ -253,33 +256,12 @@ pub fn draw_expressive_eye(layer: &mut PaintLayer<'_>, spec: EyeSpec, alpha: f32
     }
     layer.fill_ellipse(spec.x, spec.y, rx, ry, spec.color, reveal * alpha);
     if let Some((px, py)) = spec.pupil {
-        let prx = rx * 0.58;
-        let pry = ry * 0.64;
-        layer.fill_ellipse(
-            spec.x + px,
-            spec.y + py,
-            prx,
-            pry,
-            PUPIL_DARK,
+        draw_olive_iris_and_pupil(
+            layer,
+            (spec.x, spec.y),
+            (rx, ry),
+            (px, py),
             reveal * alpha,
-        );
-        let shine_r = (rx * 0.24).max(1.1);
-        layer.fill_ellipse(
-            spec.x + px - rx * 0.20,
-            spec.y + py - ry * 0.24,
-            shine_r,
-            shine_r,
-            PURE_WHITE,
-            reveal * alpha,
-        );
-        let mini_r = (rx * 0.12).max(0.65);
-        layer.fill_ellipse(
-            spec.x + px + rx * 0.20,
-            spec.y + py + ry * 0.22,
-            mini_r,
-            mini_r,
-            PURE_WHITE,
-            reveal * alpha * 0.9,
         );
     } else if spec.has_shine && ry > 2.4 {
         let shine_r = (rx.min(ry) * 0.23).max(0.85);
@@ -292,6 +274,72 @@ pub fn draw_expressive_eye(layer: &mut PaintLayer<'_>, spec: EyeSpec, alpha: f32
             reveal * alpha * 0.95,
         );
     }
+}
+
+fn draw_olive_iris_and_pupil(
+    layer: &mut PaintLayer<'_>,
+    center: (f32, f32),
+    radius: (f32, f32),
+    offset: (f32, f32),
+    alpha: f32,
+) {
+    let (x, y) = center;
+    let (rx, ry) = radius;
+    let (px, py) = offset;
+    let irx = rx * 0.68;
+    let iry = ry * 0.72;
+    let max_dx = (rx - irx - 0.45).max(0.);
+    let max_dy = (ry - iry - 0.45).max(0.);
+    let ix = x + (px * 0.85).clamp(-max_dx, max_dx);
+    let iy = y + (py * 0.85).clamp(-max_dy, max_dy);
+
+    layer.fill_ellipse(ix, iy, irx, iry, IRIS_OLIVE_RING, alpha);
+    layer.fill_ellipse(
+        ix,
+        iy + iry * 0.03,
+        irx * 0.89,
+        iry * 0.89,
+        IRIS_OLIVE_BASE,
+        alpha,
+    );
+    layer.fill_ellipse(
+        ix,
+        iy + iry * 0.26,
+        irx * 0.68,
+        iry * 0.48,
+        IRIS_OLIVE_GLOW,
+        alpha * 0.92,
+    );
+
+    let prx = rx * 0.34;
+    let pry = ry * 0.40;
+    layer.fill_ellipse(
+        ix + px * 0.20,
+        iy + py * 0.20,
+        prx,
+        pry,
+        PUPIL_DARK,
+        alpha,
+    );
+
+    let shine_r = (rx * 0.23).max(1.1);
+    layer.fill_ellipse(
+        ix - irx * 0.30,
+        iy - iry * 0.30,
+        shine_r,
+        shine_r,
+        PURE_WHITE,
+        alpha,
+    );
+    let mini_r = (rx * 0.12).max(0.68);
+    layer.fill_ellipse(
+        ix + irx * 0.28,
+        iy + iry * 0.28,
+        mini_r,
+        mini_r,
+        PURE_WHITE,
+        alpha * 0.94,
+    );
 }
 
 pub fn draw_blush(layer: &mut PaintLayer<'_>, cx: f32, y: f32, spread: f32, alpha: f32) {

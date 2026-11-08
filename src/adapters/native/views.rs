@@ -107,9 +107,9 @@ pub fn notch_scene(m: &UiModel, view: NotchView, now: Instant) -> Scene {
                 }
             }
         }
-        NotchView::Hud => hud(&mut s, m, b),
+        NotchView::Hud => hud(&mut s, m, b, now),
         NotchView::ChargingPeek | NotchView::HeadphonesPeek => {
-            device_page(&mut s, m, b, view, true)
+            device_page(&mut s, m, b, view, true, now)
         }
         _ => {
             header(&mut s, m, b);
@@ -122,7 +122,7 @@ pub fn notch_scene(m: &UiModel, view: NotchView, now: Instant) -> Scene {
                 NotchView::Todo => todo(&mut s, m, b),
                 NotchView::Shelf => shelf(&mut s, m, b, now),
                 NotchView::Charging | NotchView::Headphones => {
-                    device_page(&mut s, m, b, view, false)
+                    device_page(&mut s, m, b, view, false, now)
                 }
                 _ => {}
             }
@@ -1866,17 +1866,27 @@ fn shelf(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
     }
 }
 
-fn hud(s: &mut Scene, m: &UiModel, b: Rect) {
+fn hud(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
+    let stage_clip = m.peek_mascot_clip_for(NotchView::Hud);
+    if let Some(clip) = stage_clip {
+        super::mascot::render_peek_mascot(s, m, b.x + 42., clip, now);
+    }
     if let Some((phase, seconds)) = m.focus_notice {
         let focus = phase == FocusPhase::Focus;
-        s.progress_ring(Rect::new(b.x + 13., 8., 44., 44.), 1., 0xff5c64, false);
-        s.icon(
-            Rect::new(b.x + 23.56, 18.56, 22.88, 22.88),
-            TIMER,
-            if focus { 0xff6870 } else { 0xffb7bc },
-        );
+        let text_x = if stage_clip.is_some() {
+            b.x + 82.
+        } else {
+            s.progress_ring(Rect::new(b.x + 13., 8., 44., 44.), 1., 0xff5c64, false);
+            s.icon(
+                Rect::new(b.x + 23.56, 18.56, 22.88, 22.88),
+                TIMER,
+                if focus { 0xff6870 } else { 0xffb7bc },
+            );
+            b.x + 69.
+        };
+        let text_w = if stage_clip.is_some() { 114. } else { 126. };
         s.text(
-            Rect::new(b.x + 69., 12., 126., 19.),
+            Rect::new(text_x, 12., text_w, 19.),
             tr(if focus {
                 "focus-ready-title"
             } else {
@@ -1888,7 +1898,7 @@ fn hud(s: &mut Scene, m: &UiModel, b: Rect) {
             false,
         );
         s.text(
-            Rect::new(b.x + 69., 32., 126., 16.),
+            Rect::new(text_x, 32., text_w, 16.),
             crate::i18n::translate_with(
                 if focus {
                     "desktopUi.focus-ready-detail"
@@ -1917,6 +1927,46 @@ fn hud(s: &mut Scene, m: &UiModel, b: Rect) {
             Action::Intent(UserIntent::StartFocusFromReminder),
             0x087c31,
         );
+        return;
+    }
+    if stage_clip.is_some() {
+        let text_w = if m.hud_reminder { 134. } else { 212. };
+        if m.hud_detail.is_empty() {
+            s.text(
+                Rect::new(b.x + 82., 20., text_w, 20.),
+                &m.hud_title,
+                13.,
+                WHITE,
+                600u16,
+                false,
+            );
+        } else {
+            s.text(
+                Rect::new(b.x + 82., 12., text_w, 18.),
+                &m.hud_title,
+                12.5,
+                WHITE,
+                600u16,
+                false,
+            );
+            s.text(
+                Rect::new(b.x + 82., 32., text_w, 16.),
+                &m.hud_detail,
+                10.5,
+                DIM,
+                false,
+                false,
+            );
+        }
+        if m.hud_reminder {
+            s.button(
+                Rect::new(b.x + 222., 18., 75., 24.),
+                tr("snooze-action"),
+                "",
+                Action::Intent(UserIntent::SnoozeReminder),
+                0x303032,
+            );
+        }
         return;
     }
     s.text(
@@ -1948,7 +1998,7 @@ fn hud(s: &mut Scene, m: &UiModel, b: Rect) {
         );
     }
 }
-fn device_page(s: &mut Scene, m: &UiModel, b: Rect, view: NotchView, peek: bool) {
+fn device_page(s: &mut Scene, m: &UiModel, b: Rect, view: NotchView, peek: bool, now: Instant) {
     let charging = matches!(view, NotchView::Charging | NotchView::ChargingPeek);
     let connected = m.headphones.is_some();
     let color = if charging { 0x33e07a } else { 0x5ec2ff };
@@ -2005,6 +2055,39 @@ fn device_page(s: &mut Scene, m: &UiModel, b: Rect, view: NotchView, peek: bool)
     } else {
         Rect::new(b.x + 44., 34., 332., 76.)
     };
+    if peek && let Some(clip) = m.peek_mascot_clip_for(view) {
+        super::mascot::render_peek_mascot(s, m, card.x + 42., clip, now);
+        let tx = card.x + 82.;
+        let ty = 13.;
+        let text_width = if charging { 136. } else { 210. };
+        s.text(
+            Rect::new(tx, ty, text_width, 20.),
+            name,
+            15.,
+            WHITE,
+            600u16,
+            false,
+        );
+        s.text(
+            Rect::new(tx, ty + 20., text_width, 17.),
+            detail,
+            11.5,
+            color,
+            500u16,
+            false,
+        );
+        if charging {
+            s.text(
+                Rect::new(card.x + 222., card.y, 70., card.h),
+                format!("{}%", m.power.percent),
+                24.,
+                WHITE,
+                600u16,
+                true,
+            );
+        }
+        return;
+    }
     if !peek {
         s.round(card, 16., 0x0f0f0f);
         s.border(

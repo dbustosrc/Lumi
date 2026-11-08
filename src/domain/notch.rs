@@ -86,6 +86,8 @@ pub struct NotchContext {
     pub is_file_drag_over: bool,
     /// Keeps the notch expanded while the user interacts (e.g. typing a task).
     pub is_interaction_locked: bool,
+    /// Active voice recording or transcription session.
+    pub is_voice_busy: bool,
     pub page: NotchPage,
     pub is_lyrics_mode: bool,
     pub has_lyrics: bool,
@@ -102,8 +104,13 @@ pub struct NotchContext {
 /// leaving closes it (to `Minimal`, `Resting` or `Closed`), peeks interrupt
 /// briefly and lyrics stay pinned while a song with synced lyrics is playing.
 pub fn resolve_view(context: &NotchContext) -> NotchView {
+    let is_open = context.is_hovered || context.is_interaction_locked;
     if context.is_file_drag_over {
-        return NotchView::Shelf;
+        return if context.is_mascot_enabled && !is_open {
+            NotchView::Closed
+        } else {
+            NotchView::Shelf
+        };
     }
     if context.peek == Some(Peek::Hud)
         && context.is_actionable_alert
@@ -111,7 +118,6 @@ pub fn resolve_view(context: &NotchContext) -> NotchView {
     {
         return NotchView::Hud;
     }
-    let is_open = context.is_hovered || context.is_interaction_locked;
 
     if let (Some(peek), false) = (context.peek, is_open) {
         return match peek {
@@ -131,6 +137,9 @@ pub fn resolve_view(context: &NotchContext) -> NotchView {
             NotchPage::Pomodoro => NotchView::Pomodoro,
             NotchPage::Water => NotchView::Water,
         };
+    }
+    if context.is_mascot_enabled && context.is_voice_busy {
+        return NotchView::Closed;
     }
     if context.is_lyrics_mode && context.has_lyrics && context.is_playing {
         return NotchView::Lyrics;
