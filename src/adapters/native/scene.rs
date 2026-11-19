@@ -18,6 +18,9 @@ pub enum Field {
     VoiceHost,
     VoicePort,
     VoiceLanguage,
+    CountdownDate,
+    CountdownName,
+    QuickShareName,
     ThirdPartyNotice(usize),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -32,6 +35,15 @@ pub enum Preference {
     Language,
     OpenClick,
     PageIcons,
+    StatusRing,
+    Floating,
+    Glass,
+    GlassTint,
+    WidgetsEnabled,
+    WidgetLeft,
+    WidgetRight,
+    FirstCity,
+    SecondCity,
     Fast,
     Lyrics,
     MaEnabled,
@@ -59,6 +71,7 @@ pub enum Preference {
     PopupBattery,
     PopupWifi,
     PopupHeadphones,
+    QuickShareVisible,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -67,6 +80,7 @@ pub enum Action {
     Settings,
     CloseSettings,
     Section(usize),
+    WidgetSlot(bool),
     OpenNotices,
     OpenNotice(usize),
     BackNotices,
@@ -97,6 +111,10 @@ pub enum Action {
     CancelShelfText,
     PasteShelf,
     DragShelf(Uuid),
+    DragSharedFile(Uuid),
+    Share(crate::application::quick_share::Command),
+    SharePane(super::quick_share::Pane),
+    ShareBack,
     Seek,
     Volume,
     ShowVolume,
@@ -533,12 +551,18 @@ pub fn commands_bounds(commands: &[Paint]) -> Option<Rect> {
                     }
                 }
                 include_rect(
-                    Rect::new(lx0 - pad, ly0 - pad, lx1 - lx0 + pad * 2., ly1 - ly0 + pad * 2.),
+                    Rect::new(
+                        lx0 - pad,
+                        ly0 - pad,
+                        lx1 - lx0 + pad * 2.,
+                        ly1 - ly0 + pad * 2.,
+                    ),
                     current,
                 );
             }
             Paint::Clip(_) | Paint::Unclip | Paint::Opacity(_) => {}
         }
     }
-    (min_x <= max_x && min_y <= max_y).then(|| Rect::new(min_x, min_y, max_x - min_x, max_y - min_y))
+    (min_x <= max_x && min_y <= max_y)
+        .then(|| Rect::new(min_x, min_y, max_x - min_x, max_y - min_y))
 }

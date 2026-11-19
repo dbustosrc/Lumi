@@ -5,43 +5,84 @@ Dependency license texts for the locked Windows x64 dependency graph. Package na
 | Package | Version | Declared license | Texts |
 | --- | --- | --- | --- |
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | [3 files](adler2-2.0.1/) |
+| aead | 0.6.1 | MIT OR Apache-2.0 | [2 files](aead-0.6.1/) |
+| aes | 0.9.4 | MIT OR Apache-2.0 | [2 files](aes-0.9.4/) |
+| aes-gcm | 0.11.1 | Apache-2.0 OR MIT | [2 files](aes-gcm-0.11.1/) |
 | aho-corasick | 1.1.5 | Unlicense OR MIT | [2 files](aho-corasick-1.1.5/) |
+| anyhow | 1.0.104 | MIT OR Apache-2.0 | [2 files](anyhow-1.0.104/) |
+| async-trait | 0.1.92 | MIT OR Apache-2.0 | [2 files](async-trait-0.1.92/) |
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT | [3 files](atomic-waker-1.1.2/) |
 | autocfg | 1.5.1 | Apache-2.0 OR MIT | [2 files](autocfg-1.5.1/) |
+| base16ct | 1.0.0 | Apache-2.0 OR MIT | [2 files](base16ct-1.0.0/) |
 | base64 | 0.23.1 | MIT OR Apache-2.0 | [2 files](base64-0.23.1/) |
+| base64ct | 1.8.3 | Apache-2.0 OR MIT | [2 files](base64ct-1.8.3/) |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 | [2 files](bitflags-2.13.2/) |
 | block-buffer | 0.12.1 | MIT OR Apache-2.0 | [2 files](block-buffer-0.12.1/) |
+| block-padding | 0.4.2 | MIT OR Apache-2.0 | [2 files](block-padding-0.4.2/) |
+| btleplug | 0.13.5 | MIT/Apache-2.0/BSD-3-Clause | [1 file](btleplug-0.13.5/) |
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT | [3 files](bytemuck-1.25.2/) |
 | byteorder-lite | 0.1.0 | Unlicense OR MIT | [1 files](byteorder-lite-0.1.0/) |
 | bytes | 1.12.1 | MIT | [1 files](bytes-1.12.1/) |
+| cbc | 0.2.1 | MIT OR Apache-2.0 | [2 files](cbc-0.2.1/) |
 | cc | 1.10.0 | MIT OR Apache-2.0 | [2 files](cc-1.10.0/) |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 | [2 files](cfg-if-1.0.5/) |
 | chacha20 | 0.10.2 | MIT OR Apache-2.0 | [2 files](chacha20-0.10.2/) |
 | chrono | 0.4.45 | MIT OR Apache-2.0 | [1 files](chrono-0.4.45/) |
+| cipher | 0.5.2 | MIT OR Apache-2.0 | [2 files](cipher-0.5.2/) |
+| cmov | 0.5.4 | Apache-2.0 OR MIT | [2 files](cmov-0.5.4/) |
 | const-oid | 0.10.2 | Apache-2.0 OR MIT | [2 files](const-oid-0.10.2/) |
 | cpal | 0.18.2 | Apache-2.0 | [1 files](cpal-0.18.2/) |
+| cpubits | 0.1.1 | MIT OR Apache-2.0 | [2 files](cpubits-0.1.1/) |
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 | [2 files](cpufeatures-0.3.1/) |
 | crc32fast | 1.5.4 | MIT OR Apache-2.0 | [2 files](crc32fast-1.5.4/) |
 | crossbeam-channel | 0.5.17 | MIT OR Apache-2.0 | [3 files](crossbeam-channel-0.5.17/) |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 | [2 files](crossbeam-utils-0.8.23/) |
+| crypto-bigint | 0.7.11 | Apache-2.0 OR MIT | [2 files](crypto-bigint-0.7.11/) |
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 | [2 files](crypto-common-0.2.2/) |
+| ctr | 0.10.1 | MIT OR Apache-2.0 | [2 files](ctr-0.10.1/) |
+| ctutils | 0.4.8 | Apache-2.0 OR MIT | [2 files](ctutils-0.4.8/) |
+| dashmap | 6.2.1 | MIT | [1 file](dashmap-6.2.1/) |
 | dasp_sample | 0.11.0 | MIT OR Apache-2.0 | [MIT license and source](dasp_sample-0.11.0/) |
 | data-encoding | 2.11.1 | MIT | [1 files](data-encoding-2.11.1/) |
+| der | 0.8.3 | Apache-2.0 OR MIT | [2 files](der-0.8.3/) |
 | deranged | 0.5.9 | MIT OR Apache-2.0 | [2 files](deranged-0.5.9/) |
 | digest | 0.11.3 | MIT OR Apache-2.0 | [2 files](digest-0.11.3/) |
+| directories | 6.0.0 | MIT OR Apache-2.0 | [2 files](directories-6.0.0/) |
+| dirs-sys | 0.5.0 | MIT OR Apache-2.0 | [2 files](dirs-sys-0.5.0/) |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 | [2 files](displaydoc-0.2.7/) |
+| ecdsa | 0.17.0 | Apache-2.0 OR MIT | [2 files](ecdsa-0.17.0/) |
+| either | 1.19.0 | MIT OR Apache-2.0 | [2 files](either-1.19.0/) |
+| elliptic-curve | 0.14.3 | Apache-2.0 OR MIT | [2 files](elliptic-curve-0.14.3/) |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT | [2 files](equivalent-1.0.3/) |
+| fastrand | 2.5.0 | Apache-2.0 OR MIT | [2 files](fastrand-2.5.0/) |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | [2 files](fdeflate-0.3.7/) |
+| ff | 0.14.0 | MIT/Apache-2.0 | [2 files](ff-0.14.0/) |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 | [2 files](find-msvc-tools-0.1.15/) |
+| fixedbitset | 0.5.9 | MIT OR Apache-2.0 | [2 files](fixedbitset-0.5.9/) |
 | flate2 | 1.1.10 | MIT OR Apache-2.0 | [2 files](flate2-1.1.10/) |
+| flume | 0.12.0 | Apache-2.0/MIT | [2 files](flume-0.12.0/) |
+| foldhash | 0.1.5 | Zlib | [1 file](foldhash-0.1.5/) |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 | [2 files](form_urlencoded-1.2.2/) |
+| futures | 0.3.34 | MIT OR Apache-2.0 | [2 files](futures-0.3.34/) |
 | futures-channel | 0.3.34 | MIT OR Apache-2.0 | [2 files](futures-channel-0.3.34/) |
 | futures-core | 0.3.34 | MIT OR Apache-2.0 | [2 files](futures-core-0.3.34/) |
+| futures-executor | 0.3.34 | MIT OR Apache-2.0 | [2 files](futures-executor-0.3.34/) |
+| futures-io | 0.3.34 | MIT OR Apache-2.0 | [2 files](futures-io-0.3.34/) |
+| futures-macro | 0.3.34 | MIT OR Apache-2.0 | [2 files](futures-macro-0.3.34/) |
 | futures-sink | 0.3.34 | MIT OR Apache-2.0 | [2 files](futures-sink-0.3.34/) |
 | futures-task | 0.3.34 | MIT OR Apache-2.0 | [2 files](futures-task-0.3.34/) |
 | futures-util | 0.3.34 | MIT OR Apache-2.0 | [2 files](futures-util-0.3.34/) |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 | [2 files](getrandom-0.4.3/) |
+| ghash | 0.6.0 | Apache-2.0 OR MIT | [2 files](ghash-0.6.0/) |
+| group | 0.14.0 | MIT/Apache-2.0 | [3 files](group-0.14.0/) |
+| hashbrown | 0.14.5 | MIT OR Apache-2.0 | [2 files](hashbrown-0.14.5/) |
+| hashbrown | 0.15.5 | MIT OR Apache-2.0 | [2 files](hashbrown-0.15.5/) |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | [2 files](hashbrown-0.17.1/) |
+| heck | 0.5.0 | MIT OR Apache-2.0 | [2 files](heck-0.5.0/) |
+| hex | 0.4.3 | MIT OR Apache-2.0 | [2 files](hex-0.4.3/) |
+| hkdf | 0.13.0 | MIT OR Apache-2.0 | [2 files](hkdf-0.13.0/) |
+| hmac | 0.13.0 | MIT OR Apache-2.0 | [2 files](hmac-0.13.0/) |
+| hostname | 0.4.2 | MIT | [1 file](hostname-0.4.2/) |
 | http | 1.5.0 | MIT OR Apache-2.0 | [2 files](http-1.5.0/) |
 | http-body | 1.1.0 | MIT | [1 files](http-body-1.1.0/) |
 | http-body-util | 0.1.5 | MIT | [1 files](http-body-util-0.1.5/) |
@@ -60,64 +101,101 @@ Dependency license texts for the locked Windows x64 dependency graph. Package na
 | icu_provider | 2.4.0 | Unicode-3.0 | [1 files](icu_provider-2.4.0/) |
 | idna | 1.1.0 | MIT OR Apache-2.0 | [2 files](idna-1.1.0/) |
 | idna_adapter | 1.2.2 | Apache-2.0 OR MIT | [2 files](idna_adapter-1.2.2/) |
+| if-addrs | 0.15.0 | MIT OR BSD-3-Clause | [2 files](if-addrs-0.15.0/) |
 | image | 0.25.10 | MIT OR Apache-2.0 | [2 files](image-0.25.10/) |
 | image-webp | 0.2.4 | MIT OR Apache-2.0 | [2 files](image-webp-0.2.4/) |
 | indexmap | 2.14.2 | Apache-2.0 OR MIT | [2 files](indexmap-2.14.2/) |
+| inout | 0.2.6 | MIT OR Apache-2.0 | [2 files](inout-0.2.6/) |
 | ipnet | 2.12.2 | MIT OR Apache-2.0 | [2 files](ipnet-2.12.2/) |
+| itertools | 0.15.0 | MIT OR Apache-2.0 | [2 files](itertools-0.15.0/) |
 | itoa | 1.0.18 | MIT OR Apache-2.0 | [2 files](itoa-1.0.18/) |
 | lazy_static | 1.5.1 | MIT OR Apache-2.0 | [2 files](lazy_static-1.5.1/) |
 | libc | 0.2.191 | MIT OR Apache-2.0 | [2 files](libc-0.2.191/) |
 | litemap | 0.8.3 | Unicode-3.0 | [1 files](litemap-0.8.3/) |
+| lock_api | 0.4.14 | MIT OR Apache-2.0 | [2 files](lock_api-0.4.14/) |
 | log | 0.4.35 | MIT OR Apache-2.0 | [2 files](log-0.4.35/) |
 | matchers | 0.2.0 | MIT | [1 files](matchers-0.2.0/) |
+| mdns-sd | 0.21.7 | Apache-2.0 OR MIT | [2 files](mdns-sd-0.21.7/) |
 | memchr | 2.8.3 | Unlicense OR MIT | [2 files](memchr-2.8.3/) |
+| mime | 0.3.18 | MIT OR Apache-2.0 | [2 files](mime-0.3.18/) |
+| mime_guess | 2.0.5 | MIT | [1 file](mime_guess-2.0.5/) |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | [4 files](miniz_oxide-0.8.9/) |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | [4 files](miniz_oxide-0.9.1/) |
 | mio | 1.2.4 | MIT | [1 files](mio-1.2.4/) |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | [2 files](moxcms-0.8.1/) |
+| multimap | 0.10.1 | MIT OR Apache-2.0 | [2 files](multimap-0.10.1/) |
 | native-tls | 0.2.18 | MIT OR Apache-2.0 | [2 files](native-tls-0.2.18/) |
 | nu-ansi-term | 0.50.3 | MIT | [1 files](nu-ansi-term-0.50.3/) |
+| num-bigint | 0.5.1 | MIT OR Apache-2.0 | [2 files](num-bigint-0.5.1/) |
 | num-conv | 0.2.2 | MIT OR Apache-2.0 | [2 files](num-conv-0.2.2/) |
+| num-integer | 0.1.47 | MIT OR Apache-2.0 | [2 files](num-integer-0.1.47/) |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | [2 files](num-traits-0.2.19/) |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 | [2 files](once_cell-1.21.4/) |
+| option-ext | 0.2.0 | MPL-2.0 | [1 file](option-ext-0.2.0/) |
+| p256 | 0.14.0 | Apache-2.0 OR MIT | [2 files](p256-0.14.0/) |
+| parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | [2 files](parking_lot_core-0.9.12/) |
+| pem-rfc7468 | 1.0.0 | Apache-2.0 OR MIT | [2 files](pem-rfc7468-1.0.0/) |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 | [2 files](percent-encoding-2.3.2/) |
+| petgraph | 0.8.3 | MIT OR Apache-2.0 | [2 files](petgraph-0.8.3/) |
 | pin-project-lite | 0.2.17 | Apache-2.0 OR MIT | [2 files](pin-project-lite-0.2.17/) |
+| pkcs8 | 0.11.0 | Apache-2.0 OR MIT | [2 files](pkcs8-0.11.0/) |
 | png | 0.18.1 | MIT OR Apache-2.0 | [2 files](png-0.18.1/) |
+| polyval | 0.7.3 | Apache-2.0 OR MIT | [2 files](polyval-0.7.3/) |
 | potential_utf | 0.1.6 | Unicode-3.0 | [1 files](potential_utf-0.1.6/) |
 | powerfmt | 0.2.1 | MIT OR Apache-2.0 | [2 files](powerfmt-0.2.1/) |
+| prettyplease | 0.3.0 | MIT OR Apache-2.0 | [2 files](prettyplease-0.3.0/) |
+| primefield | 0.14.0 | Apache-2.0 OR MIT | [2 files](primefield-0.14.0/) |
+| primeorder | 0.14.0 | Apache-2.0 OR MIT | [2 files](primeorder-0.14.0/) |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | [2 files](proc-macro2-1.0.107/) |
+| prost | 0.14.6 | Apache-2.0 | [1 file](prost-0.14.6/) |
+| prost-build | 0.14.6 | Apache-2.0 | [1 file](prost-build-0.14.6/) |
+| prost-derive | 0.14.6 | Apache-2.0 | [1 file](prost-derive-0.14.6/) |
+| prost-types | 0.14.6 | Apache-2.0 | [1 file](prost-types-0.14.6/) |
 | pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 | [2 files](pxfm-0.1.30/) |
 | quick-error | 2.0.1 | MIT/Apache-2.0 | [2 files](quick-error-2.0.1/) |
 | quote | 1.0.47 | MIT OR Apache-2.0 | [2 files](quote-1.0.47/) |
 | rand | 0.10.3 | MIT OR Apache-2.0 | [3 files](rand-0.10.3/) |
 | rand_core | 0.10.1 | MIT OR Apache-2.0 | [3 files](rand_core-0.10.1/) |
+| regex | 1.13.1 | MIT OR Apache-2.0 | [2 files](regex-1.13.1/) |
 | regex-automata | 0.4.18 | MIT OR Apache-2.0 | [2 files](regex-automata-0.4.18/) |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 | [3 files](regex-syntax-0.8.11/) |
 | reqwest | 0.13.5 | MIT OR Apache-2.0 | [2 files](reqwest-0.13.5/) |
+| rfc6979 | 0.6.0 | Apache-2.0 OR MIT | [2 files](rfc6979-0.6.0/) |
+| rqs_lib | 1.0.0 | GPL-3.0-only | [3 files](rqs_lib-1.0.0/) |
 | rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 | [2 files](rustls-pki-types-1.15.1/) |
 | ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 | [2 files](ryu-1.0.23/) |
 | schannel | 0.1.30 | MIT | [1 files](schannel-0.1.30/) |
+| scopeguard | 1.2.0 | MIT OR Apache-2.0 | [2 files](scopeguard-1.2.0/) |
+| sec1 | 0.8.1 | Apache-2.0 OR MIT | [2 files](sec1-0.8.1/) |
 | serde | 1.0.229 | MIT OR Apache-2.0 | [2 files](serde-1.0.229/) |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 | [2 files](serde_core-1.0.229/) |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 | [2 files](serde_derive-1.0.229/) |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 | [2 files](serde_json-1.0.154/) |
 | serde_spanned | 1.1.2 | MIT OR Apache-2.0 | [2 files](serde_spanned-1.1.2/) |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 | [2 files](serde_urlencoded-0.7.1/) |
+| serdect | 0.4.3 | Apache-2.0 OR MIT | [2 files](serdect-0.4.3/) |
 | sha1 | 0.11.0 | MIT OR Apache-2.0 | [2 files](sha1-0.11.0/) |
 | sha2 | 0.11.1 | MIT OR Apache-2.0 | [2 files](sha2-0.11.1/) |
 | sharded-slab | 0.1.7 | MIT | [1 files](sharded-slab-0.1.7/) |
 | shlex | 2.0.1 | MIT OR Apache-2.0 | [2 files](shlex-2.0.1/) |
+| signature | 3.0.0 | Apache-2.0 OR MIT | [2 files](signature-3.0.0/) |
 | simd-adler32 | 0.3.10 | MIT | [1 files](simd-adler32-0.3.10/) |
 | slab | 0.4.12 | MIT | [1 files](slab-0.4.12/) |
 | smallvec | 1.16.4 | MIT OR Apache-2.0 | [2 files](smallvec-1.16.4/) |
+| socket-pktinfo | 0.4.2 | MIT | [1 file](socket-pktinfo-0.4.2/) |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 | [2 files](socket2-0.6.5/) |
+| spin | 0.9.9 | MIT | [1 file](spin-0.9.9/) |
+| spki | 0.8.1 | Apache-2.0 OR MIT | [2 files](spki-0.8.1/) |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | [2 files](stable_deref_trait-1.2.1/) |
+| static_assertions | 1.1.0 | MIT OR Apache-2.0 | [2 files](static_assertions-1.1.0/) |
 | subtle | 2.6.1 | BSD-3-Clause | [1 files](subtle-2.6.1/) |
 | symlink | 0.1.0 | MIT/Apache-2.0 | [3 files](symlink-0.1.0/) |
 | syn | 2.0.119 | MIT OR Apache-2.0 | [2 files](syn-2.0.119/) |
 | syn | 3.0.9 | MIT OR Apache-2.0 | [2 files](syn-3.0.9/) |
 | sync_wrapper | 1.0.2 | Apache-2.0 | [1 files](sync_wrapper-1.0.2/) |
 | synstructure | 0.14.0 | MIT | [1 files](synstructure-0.14.0/) |
+| tempfile | 3.27.0 | MIT OR Apache-2.0 | [2 files](tempfile-3.27.0/) |
+| termcolor | 1.4.1 | Unlicense OR MIT | [2 files](termcolor-1.4.1/) |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 | [2 files](thiserror-2.0.21/) |
 | thiserror-impl | 2.0.21 | MIT OR Apache-2.0 | [2 files](thiserror-impl-2.0.21/) |
 | thread_local | 1.1.10 | MIT OR Apache-2.0 | [2 files](thread_local-1.1.10/) |
@@ -128,7 +206,9 @@ Dependency license texts for the locked Windows x64 dependency graph. Package na
 | tokio | 1.54.1 | MIT | [1 files](tokio-1.54.1/) |
 | tokio-macros | 2.7.2 | MIT | [1 files](tokio-macros-2.7.2/) |
 | tokio-native-tls | 0.3.1 | MIT | [1 files](tokio-native-tls-0.3.1/) |
+| tokio-stream | 0.1.19 | MIT | [1 file](tokio-stream-0.1.19/) |
 | tokio-tungstenite | 0.30.0 | MIT | [1 files](tokio-tungstenite-0.30.0/) |
+| tokio-util | 0.7.20 | MIT | [1 file](tokio-util-0.7.20/) |
 | toml | 0.9.12+spec-1.1.0 | MIT OR Apache-2.0 | [2 files](toml-0.9.12+spec-1.1.0/) |
 | toml_datetime | 0.7.5+spec-1.1.0 | MIT OR Apache-2.0 | [2 files](toml_datetime-0.7.5+spec-1.1.0/) |
 | toml_parser | 1.1.5+spec-1.1.0 | MIT OR Apache-2.0 | [2 files](toml_parser-1.1.5+spec-1.1.0/) |
@@ -145,15 +225,20 @@ Dependency license texts for the locked Windows x64 dependency graph. Package na
 | tracing-serde | 0.2.0 | MIT | [1 files](tracing-serde-0.2.0/) |
 | tracing-subscriber | 0.3.23 | MIT | [1 files](tracing-subscriber-0.3.23/) |
 | try-lock | 0.2.5 | MIT | [1 files](try-lock-0.2.5/) |
+| ts-rs | 12.0.1 | MIT | [1 file](ts-rs-12.0.1/) |
+| ts-rs-macros | 12.0.1 | MIT | [1 file](ts-rs-macros-12.0.1/) |
 | tungstenite | 0.30.0 | MIT OR Apache-2.0 | [2 files](tungstenite-0.30.0/) |
 | typenum | 1.20.1 | MIT OR Apache-2.0 | [3 files](typenum-1.20.1/) |
+| unicase | 2.10.0 | MIT OR Apache-2.0 | [2 files](unicase-2.10.0/) |
 | unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 | [3 files](unicode-ident-1.0.27/) |
+| universal-hash | 0.6.1 | MIT OR Apache-2.0 | [2 files](universal-hash-0.6.1/) |
 | url | 2.5.8 | MIT OR Apache-2.0 | [2 files](url-2.5.8/) |
-| utf8_iter | 1.1.0 | Apache-2.0 OR MIT | [3 files](utf8_iter-1.1.0/) |
 | utf_types | 1.0.0 | Apache-2.0 OR MIT | [3 files](utf_types-1.0.0/) |
+| utf8_iter | 1.1.0 | Apache-2.0 OR MIT | [3 files](utf8_iter-1.1.0/) |
 | uuid | 1.29.0 | Apache-2.0 OR MIT | [2 files](uuid-1.29.0/) |
 | want | 0.3.2 | MIT | [1 files](want-0.3.2/) |
 | webrtc-vad | 0.4.0 | MIT | [3 files](webrtc-vad-0.4.0/) |
+| winapi-util | 0.1.11 | Unlicense OR MIT | [2 files](winapi-util-0.1.11/) |
 | windows | 0.62.2 | MIT OR Apache-2.0 | [2 files](windows-0.62.2/) |
 | windows-collections | 0.3.2 | MIT OR Apache-2.0 | [2 files](windows-collections-0.3.2/) |
 | windows-core | 0.62.2 | MIT OR Apache-2.0 | [2 files](windows-core-0.62.2/) |
@@ -168,6 +253,7 @@ Dependency license texts for the locked Windows x64 dependency graph. Package na
 | windows-threading | 0.2.1 | MIT OR Apache-2.0 | [2 files](windows-threading-0.2.1/) |
 | winnow | 0.7.15 | MIT | [1 files](winnow-0.7.15/) |
 | winnow | 1.0.4 | MIT | [1 files](winnow-1.0.4/) |
+| wnaf | 0.14.1 | Apache-2.0 OR MIT | [2 files](wnaf-0.14.1/) |
 | writeable | 0.6.4 | Unicode-3.0 | [1 files](writeable-0.6.4/) |
 | yoke | 0.8.4 | Unicode-3.0 | [1 files](yoke-0.8.4/) |
 | yoke-derive | 0.8.4 | Unicode-3.0 | [1 files](yoke-derive-0.8.4/) |

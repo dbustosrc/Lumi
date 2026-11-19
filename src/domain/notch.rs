@@ -12,9 +12,12 @@ pub enum NotchView {
     Lyrics,
     /// Temporary drag-in / drag-out file holding area.
     Shelf,
+    QuickShare,
+    FileDrop,
     Todo,
     Pomodoro,
     Water,
+    Widgets,
     Hud,
     /// Expanded interactive wireless headphones status page.
     Headphones,
@@ -32,22 +35,26 @@ pub enum NotchPage {
     #[default]
     Music,
     Shelf,
+    QuickShare,
     Todo,
     Headphones,
     Charging,
     Pomodoro,
     Water,
+    Widgets,
 }
 
 impl NotchPage {
-    pub const ALL: [NotchPage; 7] = [
+    pub const ALL: [NotchPage; 9] = [
         NotchPage::Music,
         NotchPage::Pomodoro,
         NotchPage::Water,
         NotchPage::Shelf,
+        NotchPage::QuickShare,
         NotchPage::Todo,
         NotchPage::Headphones,
         NotchPage::Charging,
+        NotchPage::Widgets,
     ];
 
     pub fn index(self) -> usize {
@@ -57,16 +64,34 @@ impl NotchPage {
             .unwrap_or_default()
     }
 
-    pub fn from_index(index: usize) -> Option<Self> {
-        Self::ALL.get(index).copied()
+    pub fn available(widgets_enabled: bool) -> &'static [Self] {
+        &Self::ALL[..Self::ALL.len() - usize::from(!widgets_enabled)]
     }
 
-    pub fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    pub fn step(self, direction: isize, widgets_enabled: bool) -> Self {
+        let pages = Self::available(widgets_enabled);
+        if self == Self::Widgets && !widgets_enabled {
+            return if direction < 0 {
+                Self::Charging
+            } else {
+                Self::Music
+            };
+        }
+        pages[(self.index() as isize + direction).rem_euclid(pages.len() as isize) as usize]
     }
 
-    pub fn previous(self) -> Self {
-        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    pub fn view(self) -> NotchView {
+        match self {
+            Self::Music => NotchView::Music,
+            Self::Shelf => NotchView::Shelf,
+            Self::QuickShare => NotchView::QuickShare,
+            Self::Todo => NotchView::Todo,
+            Self::Headphones => NotchView::Headphones,
+            Self::Charging => NotchView::Charging,
+            Self::Pomodoro => NotchView::Pomodoro,
+            Self::Water => NotchView::Water,
+            Self::Widgets => NotchView::Widgets,
+        }
     }
 }
 
@@ -84,6 +109,7 @@ pub struct NotchContext {
     pub is_hovered: bool,
     /// Active inbound OS file drag hovering over the notch window.
     pub is_file_drag_over: bool,
+    pub is_choosing_drop_destination: bool,
     /// Keeps the notch expanded while the user interacts (e.g. typing a task).
     pub is_interaction_locked: bool,
     /// Active voice recording or transcription session.
@@ -105,6 +131,9 @@ pub struct NotchContext {
 /// briefly and lyrics stay pinned while a song with synced lyrics is playing.
 pub fn resolve_view(context: &NotchContext) -> NotchView {
     let is_open = context.is_hovered || context.is_interaction_locked;
+    if context.is_choosing_drop_destination {
+        return NotchView::FileDrop;
+    }
     if context.is_file_drag_over {
         return if context.is_mascot_enabled && !is_open {
             NotchView::Closed
@@ -127,15 +156,10 @@ pub fn resolve_view(context: &NotchContext) -> NotchView {
         };
     }
     if is_open {
-        return match context.page {
-            NotchPage::Music if context.is_lyrics_mode => NotchView::Lyrics,
-            NotchPage::Music => NotchView::Music,
-            NotchPage::Shelf => NotchView::Shelf,
-            NotchPage::Todo => NotchView::Todo,
-            NotchPage::Headphones => NotchView::Headphones,
-            NotchPage::Charging => NotchView::Charging,
-            NotchPage::Pomodoro => NotchView::Pomodoro,
-            NotchPage::Water => NotchView::Water,
+        return if context.page == NotchPage::Music && context.is_lyrics_mode {
+            NotchView::Lyrics
+        } else {
+            context.page.view()
         };
     }
     if context.is_mascot_enabled && context.is_voice_busy {

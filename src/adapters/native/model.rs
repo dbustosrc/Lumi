@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
@@ -18,6 +19,57 @@ pub use super::mascot::VARIANTS_PER_CLIP;
 pub use super::mascot::{CursorSample, MascotChoreographer, MascotClip, MascotLiveState};
 
 pub const MASCOT_PROXIMITY_DIPS: f32 = 96. * 5. / 2.54;
+
+const SHELF_REMOVAL_DURATION: Duration = Duration::from_millis(280);
+const SHELF_REMOVAL_PAINT_FOR: Duration = Duration::from_millis(310);
+
+#[derive(Default)]
+pub(super) struct ShelfRemoval {
+    entries: Vec<(usize, ShelfEntry)>,
+    started: Option<Instant>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ShelfRemovalFrame<'a> {
+    pub entries: &'a [(usize, ShelfEntry)],
+    pub progress: f32,
+}
+
+impl ShelfRemoval {
+    pub fn remember(&mut self, previous: Vec<ShelfEntry>, current: &[ShelfEntry], now: Instant) {
+        if previous.len() > current.len() {
+            let remaining: HashSet<_> = current.iter().map(|entry| entry.item.id).collect();
+            self.entries = previous
+                .into_iter()
+                .enumerate()
+                .filter(|(_, entry)| !remaining.contains(&entry.item.id))
+                .collect();
+            self.started = Some(now);
+        }
+    }
+
+    pub fn frame(&self, now: Instant) -> Option<ShelfRemovalFrame<'_>> {
+        let elapsed = now.duration_since(self.started?);
+        (elapsed < SHELF_REMOVAL_DURATION).then_some(ShelfRemovalFrame {
+            entries: &self.entries,
+            progress: elapsed.as_secs_f32() / SHELF_REMOVAL_DURATION.as_secs_f32(),
+        })
+    }
+
+    pub fn animating(&self, now: Instant) -> bool {
+        self.started
+            .is_some_and(|start| now.duration_since(start) < SHELF_REMOVAL_PAINT_FOR)
+    }
+
+    pub fn expire(&mut self, now: Instant) {
+        if !self.animating(now) {
+            self.started = None;
+            if !self.entries.is_empty() {
+                self.entries = Vec::new();
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -55,6 +107,12 @@ impl Rect {
 
 pub const SURFACE_WIDTH: f32 = 584.;
 pub const SURFACE_HEIGHT: f32 = 182.;
+pub const FLOATING_GAP: f32 = 8.;
+pub const COLLAPSED_NAV_WIDTH: f32 = 82.;
+
+pub fn expanded_nav_width(widgets_enabled: bool) -> f32 {
+    16. + (crate::domain::notch::NotchPage::available(widgets_enabled).len() + 1) as f32 * 28.
+}
 pub const TASK_COLORS: [u32; 5] = [0x38d36f, 0x27a9ff, 0xffb649, 0xff6677, 0xbc8aff];
 
 #[derive(Clone, Copy, Debug)]
@@ -62,10 +120,19 @@ pub struct SurfacePlacement {
     pub bounds: Rect,
     pub scale: f32,
 }
+#[cfg(test)]
 pub fn surface_placement(
     monitor: Rect,
     dpi_scale: f32,
     user_percent: u16,
+) -> Option<SurfacePlacement> {
+    place_notch(monitor, dpi_scale, user_percent, false)
+}
+pub fn place_notch(
+    monitor: Rect,
+    dpi_scale: f32,
+    user_percent: u16,
+    floating: bool,
 ) -> Option<SurfacePlacement> {
     if monitor.w <= 0. || monitor.h <= 0. || !dpi_scale.is_finite() || dpi_scale <= 0. {
         return None;
@@ -75,15 +142,16 @@ pub fn surface_placement(
     } else {
         f32::from(user_percent) / 100.
     };
+    let gap = if floating { FLOATING_GAP } else { 0. };
     let scale = (dpi_scale * user)
         .min(monitor.w / SURFACE_WIDTH)
-        .min(monitor.h / SURFACE_HEIGHT);
+        .min(monitor.h / (SURFACE_HEIGHT + gap));
     let width = (SURFACE_WIDTH * scale).ceil();
     let height = (SURFACE_HEIGHT * scale).ceil();
     Some(SurfacePlacement {
         bounds: Rect::new(
             monitor.x + ((monitor.w - width) / 2.).round(),
-            monitor.y,
+            monitor.y + (gap * scale).round(),
             width,
             height,
         ),
@@ -114,6 +182,20 @@ impl Shell {
             height,
             radius,
             ear,
+        }
+    }
+    pub fn corners(self, floating: bool) -> (f32, f32) {
+        if floating {
+            (0., self.radius.min(self.height / 2.))
+        } else {
+            let ear = self.ear.min(self.height * 0.45).max(2.);
+            (
+                ear,
+                self.radius
+                    .min(self.width * 0.45)
+                    .min(self.height - ear)
+                    .max(2.),
+            )
         }
     }
     pub fn body(self) -> Rect {
@@ -231,6 +313,7 @@ pub struct UiModel {
     pub volume_from: f32,
     pub tasks: Vec<TodoTask>,
     pub progress: TodoProgress,
+    pub progress_today: TodoProgress,
     pub voice: VoiceState,
     pub voice_error: Option<&'static str>,
     pub calendar: Option<CalendarGrid>,
@@ -243,14 +326,17 @@ pub struct UiModel {
     pub palette: bool,
     pub editor_error: Option<&'static str>,
     pub shelf: Vec<ShelfEntry>,
-    pub previous_shelf: Vec<ShelfEntry>,
+    pub quick_share: crate::application::quick_share::Snapshot,
+    pub quick_share_ui: super::quick_share::Ui,
+    pub(super) shelf_removal: ShelfRemoval,
     pub shelf_menu: bool,
     pub shelf_scroll: f32,
     pub shelf_drag: bool,
+    pub file_drop_destination: Option<crate::application::events::FileDropDestination>,
     pub shelf_text_open: bool,
     pub shelf_text: String,
-    pub shelf_change: Instant,
     pub utility: Option<UtilityState>,
+    pub focus_today: (u64, u32),
     pub water: Option<WaterState>,
     pub water_settings: bool,
     pub water_graph: bool,
@@ -316,6 +402,7 @@ impl UiModel {
             volume_from: 0.,
             tasks: vec![],
             progress: TodoProgress::default(),
+            progress_today: TodoProgress::default(),
             voice: VoiceState::Idle,
             voice_error: None,
             calendar: None,
@@ -328,14 +415,17 @@ impl UiModel {
             palette: false,
             editor_error: None,
             shelf: vec![],
-            previous_shelf: vec![],
+            quick_share: Default::default(),
+            quick_share_ui: Default::default(),
+            shelf_removal: ShelfRemoval::default(),
             shelf_menu: false,
             shelf_scroll: 0.,
             shelf_drag: false,
+            file_drop_destination: None,
             shelf_text_open: false,
             shelf_text: String::new(),
-            shelf_change: settled,
             utility: None,
+            focus_today: (0, 0),
             water: None,
             water_settings: false,
             water_graph: false,
@@ -410,7 +500,12 @@ impl UiModel {
                     self.sync_mascot_stage(now);
                 }
             }
-            ViewUpdate::Clock(value) => self.clock = value,
+            ViewUpdate::Clock(value) => {
+                if self.clock.date_naive() != value.date_naive() {
+                    self.progress_today = TodoProgress::for_day(&self.tasks, value.date_naive());
+                }
+                self.clock = value;
+            }
             ViewUpdate::Track { track, is_playing } => {
                 self.track = track;
                 self.playing = is_playing;
@@ -438,6 +533,7 @@ impl UiModel {
                 );
                 self.tasks = tasks;
                 self.progress = progress;
+                self.progress_today = TodoProgress::for_day(&self.tasks, self.clock.date_naive());
             }
             ViewUpdate::Calendar { grid, tasks } => {
                 self.calendar = Some(grid);
@@ -472,11 +568,38 @@ impl UiModel {
                     None
                 };
             }
+            ViewUpdate::QuickShare(state) => {
+                if state.request.is_none()
+                    && self.quick_share_ui.pane() == super::quick_share::Pane::Request
+                {
+                    self.quick_share_ui.back();
+                }
+                let previous = std::mem::replace(&mut self.quick_share, state);
+                self.quick_share_ui
+                    .remember_removed(previous, &self.quick_share, now);
+            }
+            ViewUpdate::QuickShareAttention => {
+                use super::quick_share::Pane;
+                self.quick_share_ui.navigate(
+                    if self.quick_share.request.is_some() {
+                        Pane::Request
+                    } else {
+                        Pane::Receive
+                    },
+                    now,
+                    self.settings.desktop.fast_animations,
+                );
+            }
+            ViewUpdate::QuickShareStaged => self.quick_share_ui.navigate(
+                super::quick_share::Pane::Send,
+                now,
+                self.settings.desktop.fast_animations,
+            ),
             ViewUpdate::ShelfItems(items) => {
                 self.choreographer
                     .on_shelf_updated(items.len(), self.mascot, now);
-                self.previous_shelf = std::mem::replace(&mut self.shelf, items);
-                self.shelf_change = now;
+                let previous = std::mem::replace(&mut self.shelf, items);
+                self.shelf_removal.remember(previous, &self.shelf, now);
             }
             ViewUpdate::ShelfThumbnail { id, thumbnail } => {
                 if let Some(item) = self.shelf.iter_mut().find(|i| i.item.id == id) {
@@ -484,9 +607,11 @@ impl UiModel {
                 }
             }
             ViewUpdate::ShelfDragHover(value) => self.shelf_drag = value,
+            ViewUpdate::FileDropDestination(destination) => {
+                self.file_drop_destination = destination
+            }
             ViewUpdate::Power(value) => {
-                self.choreographer
-                    .on_power_updated(value, self.mascot, now);
+                self.choreographer.on_power_updated(value, self.mascot, now);
                 self.power = value;
                 self.sync_mascot_stage(now);
             }
@@ -496,6 +621,7 @@ impl UiModel {
                 self.sync_mascot_stage(now);
             }
             ViewUpdate::MediaConnection(value) => self.connection = value,
+            ViewUpdate::FocusToday(minutes, sessions) => self.focus_today = (minutes, sessions),
             ViewUpdate::Utility(value) => {
                 self.choreographer
                     .on_utility_updated(value.focus_running, self.mascot, now);
@@ -634,17 +760,12 @@ impl UiModel {
         }
     }
     pub fn list_amount(&self, now: Instant) -> f32 {
-        tween(
+        list_transition(
             self.list_from,
             f32::from(self.list_expanded as u8),
             self.list_changed,
             now,
-            if self.settings.desktop.fast_animations {
-                0.11
-            } else {
-                0.2
-            },
-            (0.25, 0.1, 0.25, 1.),
+            self.settings.desktop.fast_animations,
         )
     }
     pub fn set_list_expanded(&mut self, value: bool, now: Instant) {
@@ -834,6 +955,11 @@ impl UiModel {
     }
     pub fn animating(&self, now: Instant) -> bool {
         self.motion.running(now)
+            || self.view == NotchView::QuickShare
+                && (self.quick_share.visible
+                    || self
+                        .quick_share_ui
+                        .animating(now, self.settings.desktop.fast_animations))
             || self.choreographer.is_animating(
                 now,
                 MascotLiveState {
@@ -851,7 +977,7 @@ impl UiModel {
             || now.duration_since(self.nav_changed) < Duration::from_millis(280)
             || now.duration_since(self.volume_changed) < Duration::from_millis(220)
             || now.duration_since(self.water_change) < Duration::from_millis(900)
-            || now.duration_since(self.shelf_change) < Duration::from_millis(310)
+            || self.view == NotchView::Shelf && self.shelf_removal.animating(now)
             || self.playing
                 && matches!(
                     self.view,
@@ -863,6 +989,21 @@ impl UiModel {
             || now.duration_since(self.hover_changed) < Duration::from_millis(155)
     }
 }
+pub(super) fn list_transition_duration(fast: bool) -> f32 {
+    if fast { 0.11 } else { 0.2 }
+}
+
+pub(super) fn list_transition(from: f32, to: f32, start: Instant, now: Instant, fast: bool) -> f32 {
+    tween(
+        from,
+        to,
+        start,
+        now,
+        list_transition_duration(fast),
+        (0.25, 0.1, 0.25, 1.),
+    )
+}
+
 fn tween(
     from: f32,
     to: f32,
@@ -875,16 +1016,14 @@ fn tween(
     from + (to - from) * cubic_bezier(t, curve.0, curve.1, curve.2, curve.3)
 }
 pub fn page_index(view: NotchView) -> Option<usize> {
-    Some(match view {
-        NotchView::Music | NotchView::Lyrics => 0,
-        NotchView::Pomodoro => 1,
-        NotchView::Water => 2,
-        NotchView::Shelf => 3,
-        NotchView::Todo => 4,
-        NotchView::Headphones => 5,
-        NotchView::Charging => 6,
-        _ => return None,
-    })
+    let view = if view == NotchView::Lyrics {
+        NotchView::Music
+    } else {
+        view
+    };
+    crate::domain::notch::NotchPage::ALL
+        .iter()
+        .position(|page| page.view() == view)
 }
 pub fn is_expanded(view: NotchView) -> bool {
     page_index(view).is_some()

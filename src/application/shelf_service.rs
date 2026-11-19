@@ -45,12 +45,7 @@ impl ShelfService {
     pub fn entries(&self) -> Vec<ShelfEntry> {
         self.items
             .iter()
-            .map(|item| ShelfEntry {
-                item: item.clone(),
-                badge: item.badge(),
-                size_label: item.formatted_size(),
-                thumbnail: self.thumbnails.get(&item.id).cloned(),
-            })
+            .map(|item| ShelfEntry::new(item.clone(), self.thumbnails.get(&item.id).cloned()))
             .collect()
     }
 

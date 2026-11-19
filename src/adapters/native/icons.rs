@@ -141,7 +141,33 @@ pub fn svg(key: &str, tint: u32) -> String {
             if active { "black" } else { "white" }
         );
     }
+    if key == "quick-share-incoming" {
+        return format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M6 6H13 M6 6L3 13V20H21V13L20 10 M3 13H8L10 16H14L16 13H21" fill="none" stroke="#{tint:06x}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="19" cy="5" r="3" fill="#73b5ff"/></svg>"##,
+        );
+    }
     let (path, w, h, filled, stroke) = match key {
+        "quick-share-radar" => (
+            "M20.7 10A9 9 0 1 1 14 3.3 M16.4 11A4.5 4.5 0 1 1 11 7.6 M12 12L20 4",
+            24.,
+            24.,
+            false,
+            2.,
+        ),
+        "quick-share-expand" => (
+            "M6 12V18H12 M12 6H18V12 M6 18L10 14 M18 6L14 10",
+            24.,
+            24.,
+            false,
+            2.,
+        ),
+        "quick-share-collapse" => (
+            "M5 13H11V19 M13 5V11H19 M11 13L5 19 M13 11L19 5",
+            24.,
+            24.,
+            false,
+            2.,
+        ),
         "\u{e189}" => (PAGE_PATHS[0], 24., 24., false, 1.8),
         "\u{e916}" => (PAGE_PATHS[1], 24., 24., false, 1.8),
         "water-drop" => (PAGE_PATHS[2], 24., 24., false, 1.8),
@@ -157,6 +183,34 @@ pub fn svg(key: &str, tint: u32) -> String {
         "\u{e713}" => (SETTINGS_PATHS[0], 24., 24., false, 1.7),
         "\u{e7f4}" => (SETTINGS_PATHS[1], 24., 24., false, 1.7),
         "\u{e790}" => (SETTINGS_PATHS[2], 24., 24., false, 1.7),
+        "widgets-grid" => (
+            "M3 3H10V10H3Z M14 3H21V10H14Z M3 14H10V21H3Z M14 14H21V21H14Z",
+            24.,
+            24.,
+            true,
+            0.,
+        ),
+        "world-clock" => (
+            "M12 3A9 9 0 1 0 12 21A9 9 0 1 0 12 3 M3 12H21 M12 3C6 7 6 17 12 21C18 17 18 7 12 3",
+            24.,
+            24.,
+            false,
+            1.6,
+        ),
+        "moon-phase" => (
+            "M20 15A8 8 0 0 1 9 4A9 9 0 1 0 20 15Z",
+            24.,
+            24.,
+            false,
+            1.7,
+        ),
+        "countdown" => (
+            "M6 3H18 M6 21H18 M7 3V6Q7 8 12 12Q17 16 17 18V21 M17 3V6Q17 8 12 12Q7 16 7 18V21",
+            24.,
+            24.,
+            false,
+            1.7,
+        ),
         "bluetooth" => ICON_BLUETOOTH,
         "headphones" => ICON_HEADPHONES,
         "mouse-move" => (

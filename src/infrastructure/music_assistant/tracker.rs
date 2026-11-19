@@ -4,8 +4,6 @@ use std::time::{Duration, Instant};
 use super::protocol::QueueState;
 use crate::domain::media::{PlaybackSnapshot, PlaybackStatus};
 
-const TRANSFER_COOLDOWN: Duration = Duration::from_secs(5);
-
 /// Keeps every known queue and decides which one the notch follows: the
 /// configured one, Lumi's local Sendspin player, or whichever queue is active.
 pub struct QueueTracker {
@@ -14,7 +12,6 @@ pub struct QueueTracker {
     local_player_id: String,
     followed: Option<String>,
     last_published: Option<PlaybackSnapshot>,
-    last_transfer_at: Option<Instant>,
 }
 
 impl QueueTracker {
@@ -26,7 +23,6 @@ impl QueueTracker {
             local_player_id,
             followed: None,
             last_published: None,
-            last_transfer_at: None,
         }
     }
 
@@ -47,51 +43,6 @@ impl QueueTracker {
         let queue = self.queues.get_mut(queue_id)?;
         queue.elapsed = elapsed;
         self.refresh()
-    }
-
-    /// When no explicit `queue_id` is configured and another queue is playing
-    /// silently while Lumi's local audio player is online, returns `(source, target)`.
-    pub fn take_auto_transfer(&mut self, now: Instant) -> Option<(String, String)> {
-        if self.preferred.is_some() || !self.is_local_ready_and_idle() {
-            return None;
-        }
-        if self
-            .last_transfer_at
-            .is_some_and(|at| now.saturating_duration_since(at) < TRANSFER_COOLDOWN)
-        {
-            return None;
-        }
-        let source = self
-            .queues
-            .values()
-            .find(|q| q.queue_id != self.local_player_id && q.status == PlaybackStatus::Playing)
-            .map(|q| q.queue_id.clone())?;
-        self.last_transfer_at = Some(now);
-        Some((source, self.local_player_id.clone()))
-    }
-
-    /// When the user presses Play on a paused remote queue while `queue_id` is
-    /// automatic, transfers playback onto Lumi's local PC audio player.
-    pub fn take_play_transfer(&mut self, now: Instant) -> Option<(String, String)> {
-        if self.preferred.is_some() || !self.queues.contains_key(&self.local_player_id) {
-            return None;
-        }
-        let followed_id = self.followed.as_ref()?;
-        if followed_id == &self.local_player_id {
-            return None;
-        }
-        let followed = self.queues.get(followed_id)?;
-        if followed.status == PlaybackStatus::Playing || followed.track.is_none() {
-            return None;
-        }
-        self.last_transfer_at = Some(now);
-        Some((followed_id.clone(), self.local_player_id.clone()))
-    }
-
-    fn is_local_ready_and_idle(&self) -> bool {
-        self.queues
-            .get(&self.local_player_id)
-            .is_some_and(|local| local.status != PlaybackStatus::Playing)
     }
 
     /// Returns a snapshot only when the followed playback actually changed.

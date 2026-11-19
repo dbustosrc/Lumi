@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "quick_share.rs"]
+mod quick_share;
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -81,7 +84,7 @@ fn setup(initial: AppSettings, fail_save: bool, fail_startup_for: Option<bool>) 
 #[test]
 fn defaults_use_current_schema_with_mouse_move_off_and_validate() {
     let defaults = AppSettings::default();
-    assert_eq!(defaults.schema_version, 4);
+    assert_eq!(defaults.schema_version, 7);
     assert!(!defaults.is_mouse_move_enabled);
     assert!(defaults.validate().is_ok());
 }
@@ -90,7 +93,7 @@ fn defaults_use_current_schema_with_mouse_move_off_and_validate() {
 fn current_schema_requires_the_mouse_move_setting_instead_of_falling_back() {
     let content = toml::to_string_pretty(&AppSettings::default()).unwrap();
     let missing = content.replace("is_mouse_move_enabled = false\n", "");
-    assert_ne!(missing, content, "fixture must remove the schema 4 setting");
+    assert_ne!(missing, content, "fixture must remove the schema 5 setting");
 
     let path = std::env::temp_dir().join(format!(
         "lumi-settings-missing-mouse-{}.toml",
@@ -101,6 +104,111 @@ fn current_schema_requires_the_mouse_move_setting_instead_of_falling_back() {
     let _ = std::fs::remove_file(path);
 
     assert_eq!(result.unwrap_err().key, "settings.error.parse");
+}
+
+#[test]
+fn schema_four_migration_preserves_existing_values_and_adds_current_desktop_defaults() {
+    let path = std::env::temp_dir().join(format!(
+        "lumi-settings-migrate-{}.toml",
+        uuid::Uuid::new_v4()
+    ));
+    let mut legacy = AppSettings::default();
+    legacy.schema_version = 4;
+    legacy.music_assistant.token = "preserved-test-token".into();
+    legacy.desktop.display_id = "monitor-2".into();
+    let mut document = toml::Value::try_from(legacy).unwrap();
+    let desktop = document["desktop"].as_table_mut().unwrap();
+    for key in ["status_ring", "appearance", "widgets"] {
+        desktop.remove(key);
+    }
+    document.as_table_mut().unwrap().remove("quick_share");
+    std::fs::write(&path, toml::to_string_pretty(&document).unwrap()).unwrap();
+
+    crate::infrastructure::settings_migration::migrate(&path).unwrap();
+    let migrated = TomlSettingsRepository::new(path.clone()).load().unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert_eq!(migrated.schema_version, 7);
+    assert_eq!(migrated.music_assistant.token, "preserved-test-token");
+    assert_eq!(migrated.desktop.display_id, "monitor-2");
+    assert_eq!(migrated.desktop.status_ring, StatusRing::Auto);
+    assert_eq!(migrated.desktop.appearance, NotchAppearance::default());
+    assert_eq!(migrated.desktop.widgets, WidgetSettings::default());
+    assert_eq!(migrated.quick_share, QuickShareSettings::default());
+}
+
+#[test]
+fn schema_five_migration_preserves_existing_values_and_adds_quick_share_defaults() {
+    let path = std::env::temp_dir().join(format!(
+        "lumi-settings-migrate-v5-{}.toml",
+        uuid::Uuid::new_v4()
+    ));
+    let mut legacy = AppSettings::default();
+    legacy.schema_version = 5;
+    legacy.music_assistant.token = "preserved-test-token".into();
+    legacy.desktop.display_id = "monitor-2".into();
+    let mut document = toml::Value::try_from(legacy).unwrap();
+    document.as_table_mut().unwrap().remove("quick_share");
+    std::fs::write(&path, toml::to_string_pretty(&document).unwrap()).unwrap();
+
+    crate::infrastructure::settings_migration::migrate(&path).unwrap();
+    let migrated = TomlSettingsRepository::new(path.clone()).load().unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert_eq!(migrated.schema_version, 7);
+    assert_eq!(migrated.music_assistant.token, "preserved-test-token");
+    assert_eq!(migrated.desktop.display_id, "monitor-2");
+    assert_eq!(migrated.quick_share, QuickShareSettings::default());
+}
+
+#[test]
+fn quick_share_default_and_schema_six_migration_use_computer_name_but_keep_custom_names() {
+    let computer_name = std::env::var("COMPUTERNAME").unwrap_or_default();
+    assert_eq!(QuickShareSettings::default().device_name, computer_name);
+
+    for (legacy_name, expected_name) in [
+        ("Lumi".to_owned(), computer_name.clone()),
+        ("Custom device".into(), "Custom device".into()),
+    ] {
+        let path = std::env::temp_dir().join(format!(
+            "lumi-settings-migrate-v6-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        let mut legacy = AppSettings::default();
+        legacy.schema_version = 6;
+        legacy.quick_share.device_name = legacy_name;
+        std::fs::write(&path, toml::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        crate::infrastructure::settings_migration::migrate(&path).unwrap();
+        let migrated = TomlSettingsRepository::new(path.clone()).load().unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(migrated.schema_version, 7);
+        assert_eq!(migrated.quick_share.device_name, expected_name);
+    }
+}
+
+#[test]
+fn malformed_schema_four_migration_leaves_the_original_file_unchanged() {
+    let path = std::env::temp_dir().join(format!(
+        "lumi-settings-migrate-invalid-{}.toml",
+        uuid::Uuid::new_v4()
+    ));
+    let mut legacy = AppSettings::default();
+    legacy.schema_version = 4;
+    legacy.desktop.scale_percent = 125;
+    let mut document = toml::Value::try_from(legacy).unwrap();
+    let desktop = document["desktop"].as_table_mut().unwrap();
+    for key in ["status_ring", "appearance", "widgets"] {
+        desktop.remove(key);
+    }
+    document.as_table_mut().unwrap().remove("quick_share");
+    let original = toml::to_string_pretty(&document).unwrap();
+    std::fs::write(&path, &original).unwrap();
+
+    assert!(crate::infrastructure::settings_migration::migrate(&path).is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
@@ -235,7 +343,7 @@ fn startup_failure_prevents_save_and_broadcast() {
 }
 
 #[test]
-fn toml_repository_round_trips_desktop_and_reminder_settings() {
+fn toml_repository_round_trips_desktop_appearance_widgets_and_reminder_settings() {
     let path: PathBuf =
         std::env::temp_dir().join(format!("lumi-settings-{}.toml", uuid::Uuid::new_v4()));
     let repository = TomlSettingsRepository::new(path.clone());
@@ -251,6 +359,19 @@ fn toml_repository_round_trips_desktop_and_reminder_settings() {
     settings.desktop.popup_wifi = false;
     settings.desktop.calendar_starts_monday = true;
     settings.desktop.calendar_week_view = true;
+    settings.desktop.status_ring = StatusRing::Todo;
+    settings.desktop.appearance.floating = true;
+    settings.desktop.appearance.glass = true;
+    settings.desktop.appearance.tint_percent = 55;
+    settings.desktop.widgets.enabled = true;
+    settings.desktop.widgets.left = Widget::Countdown;
+    settings.desktop.widgets.right = Widget::Moon;
+    settings.desktop.widgets.first_city = 2;
+    settings.desktop.widgets.second_city = 3;
+    settings.desktop.widgets.countdown_date = "2026-11-14".into();
+    settings.desktop.widgets.countdown_name = "Launch".into();
+    settings.quick_share.device_name = "Lumi test device".into();
+    settings.quick_share.visible = true;
     settings.reminders.sounds = false;
     settings.reminders.task_start = false;
     settings.reminders.snooze_minutes = 12;

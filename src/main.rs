@@ -112,6 +112,7 @@ fn load_settings_service(
     data_dir: &Path,
     system_locale: Option<&str>,
 ) -> Result<Arc<SettingsService>, StartupError> {
+    infrastructure::settings_migration::migrate(&data_dir.join("settings.toml"))?;
     let repository = Box::new(TomlSettingsRepository::new(data_dir.join("settings.toml")));
     let service = Arc::new(SettingsService::new(
         repository,
@@ -160,10 +161,22 @@ fn spawn_background_services(
         settings.current().water,
         chrono::Local::now(),
     )?;
+    let focus_store = infrastructure::focus_store::JsonFocusDayStore(data_dir.join("focus.json"));
+    let focus_day = focus_store.load(chrono::Local::now().date_naive())?;
+    let (quick_share, quick_share_rx) = tokio::sync::mpsc::unbounded_channel();
+    runtime.spawn(infrastructure::quick_share::run(
+        data_dir.join("quick-share"),
+        settings.subscribe(),
+        quick_share_rx,
+        Arc::clone(&presenter),
+    ));
     let services = ControllerServices {
+        focus_store: Box::new(focus_store),
+        focus_day,
         water,
         media,
         shelf,
+        quick_share,
         todo,
         voice,
     };

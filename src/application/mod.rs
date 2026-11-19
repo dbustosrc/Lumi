@@ -5,6 +5,7 @@ pub mod events;
 pub mod media_session;
 pub mod mouse_mover;
 pub mod presenter;
+pub mod quick_share;
 pub mod reminders;
 pub mod settings;
 pub mod shelf_service;

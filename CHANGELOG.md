@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.0
+
+- Added Quick Share for sending and receiving files with nearby Android devices. Drop files on the notch to choose Shelf or Quick Share. Review incoming requests and confirm the code before accepting.
+- Added an animated device radar and separate trays for outgoing and received files. Clearing a tray or removing an item keeps the file on disk.
+- Added Classic and Floating notch styles, an optional glass effect, and battery, water, or task progress options for the status ring.
+- Added a Widgets page with two configurable slots for calendar, water, focus, world clock, battery, moon, or countdown widgets.
+- Fixed Music Assistant playback switching devices when a remote queue changes or resumes.
+
 ## 1.3.0
 
 - Added Mimo animations to quick panels for Bluetooth headphones, charging, and reminders.

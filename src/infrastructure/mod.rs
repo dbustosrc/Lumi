@@ -2,11 +2,14 @@
 //! storage, audio capture and Windows integrations).
 
 pub mod artwork;
+pub mod focus_store;
 pub mod logging;
 pub mod lrclib;
 pub mod microphone;
 pub mod music_assistant;
+pub mod quick_share;
 pub mod paths;
+pub mod settings_migration;
 pub mod settings_store;
 pub mod shelf_platform;
 pub mod shelf_store;

@@ -1,5 +1,9 @@
 //! The Win32 procedure only queues input. Application/UI state is updated outside
 //! callbacks, so synchronous window/control notifications cannot alias Host.
+#[cfg(test)]
+#[path = "../../../tests/fixtures/native_glass.rs"]
+mod glass_tests;
+
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::mem::{size_of, size_of_val};
@@ -23,11 +27,13 @@ use super::graphics::{GraphicsDevice, Surface};
 use super::input::{Inputs, WM_EDIT_CANCEL, WM_EDIT_COMMIT, WM_EDIT_TAB};
 use super::model::*;
 use super::presenter::{NativePresenter, WM_UPDATES};
+use super::quick_share::{self, Pane as SharePane};
 use super::scene::*;
 use super::settings::{self, Display, SettingsUi};
 use super::views;
 use crate::application::events::{AppEvent, EventSender, UserIntent};
 use crate::application::presenter::ViewUpdate;
+use crate::application::quick_share::Command as ShareCommand;
 use crate::application::settings::SettingsService;
 use crate::domain::background::{BackgroundDetection, BackgroundObservation};
 use crate::domain::notch::NotchView;
@@ -119,6 +125,7 @@ pub struct NativeHost {
     form: SettingsUi,
     scene: Scene,
     settings_scene: Scene,
+    file_drop_zones: shelf_text::FileDropZones,
     local_transition: Option<(Scene, Instant)>,
     preference_transition: Option<(Scene, Instant)>,
     inputs: Inputs,
@@ -140,7 +147,7 @@ pub struct NativeHost {
     pressed: Option<(HWND, Action, (f32, f32))>,
     scroll_grab: f32,
     pointer_inside: bool,
-    region: Option<(i32, i32, i32)>,
+    region: Option<(i32, i32, i32, bool)>,
     frame_timer: bool,
     dirty: bool,
     settings_dirty: bool,
@@ -214,7 +221,8 @@ impl NativeHost {
                 SURFACE_HEIGHT as u32,
                 1.,
             )?;
-            shelf_text::install_drop_target(notch.0 as isize, events.clone())
+            let file_drop_zones = shelf_text::FileDropZones::default();
+            shelf_text::install_drop_target(notch, events.clone(), file_drop_zones.clone())
                 .map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
             let callback: TrayActionHandler = Arc::new({
                 let raw = notch.0 as isize;
@@ -263,6 +271,7 @@ impl NativeHost {
                 form,
                 scene: Scene::default(),
                 settings_scene: Scene::default(),
+                file_drop_zones,
                 local_transition: None,
                 preference_transition: None,
                 inputs: Inputs::default(),
@@ -331,7 +340,13 @@ impl NativeHost {
                             );
                         }
                         let was_editor = self.model.draft.is_some();
+                        let was_discovering = self.share_discovering();
+                        let reveal_share = matches!(update, ViewUpdate::QuickShareAttention);
                         self.model.apply(update, Instant::now());
+                        self.sync_share_discovery(was_discovering);
+                        if reveal_share {
+                            self.intent(UserIntent::RevealQuickShare);
+                        }
                         if was_editor != self.model.draft.is_some() {
                             self.edit_lock(self.model.draft.is_some())?;
                         }
@@ -411,7 +426,11 @@ impl NativeHost {
                         let inside =
                             Rect::new(body.x, body.y, body.w, body.h.max(10.)).contains(x, y);
                         self.set_hover(inside);
-                        let nav_width = if self.model.nav { 240. } else { 82. };
+                        let nav_width = if self.model.nav {
+                            expanded_nav_width(self.model.settings.desktop.widgets.enabled)
+                        } else {
+                            COLLAPSED_NAV_WIDTH
+                        };
                         let nav = self.model.expanded()
                             && self.model.settings.desktop.page_icons
                             && Rect::new(
@@ -458,11 +477,16 @@ impl NativeHost {
                                 self.slide(&action, x, y);
                             } else if action == Action::ScrollSettings {
                                 self.scroll_settings(y);
-                            } else if let Action::DragShelf(id) = action {
+                            } else if let Action::DragShelf(id) | Action::DragSharedFile(id) =
+                                action
+                            {
                                 if (x - start.0).hypot(y - start.1) > 6. {
                                     self.pressed = None;
                                     let _ = ReleaseCapture();
-                                    self.drag_shelf(id)?;
+                                    self.drag_shelf(
+                                        id,
+                                        matches!(action, Action::DragSharedFile(_)),
+                                    )?;
                                 }
                             }
                         }
@@ -595,6 +619,7 @@ impl NativeHost {
                                 self.model.shelf_scroll = (self.model.shelf_scroll - delta * 68.)
                                     .clamp(0., (self.model.shelf.len() as f32 * 68. - 336.).max(0.))
                             }
+                            NotchView::QuickShare => quick_share::scroll(&mut self.model, delta),
                             _ => {}
                         }
                         self.dirty = true;
@@ -897,6 +922,8 @@ impl NativeHost {
                     | Action::WaterSettings
                     | Action::WaterGraph
                     | Action::ShelfMenu
+                    | Action::SharePane(SharePane::Radar | SharePane::Request)
+                    | Action::ShareBack
                     | Action::ShelfText
                     | Action::CancelShelfText
             )
@@ -909,6 +936,23 @@ impl NativeHost {
         match action {
             Action::None => {}
             Action::Intent(intent) => self.intent(intent),
+            Action::Share(command) => {
+                let _ = self.events.send(AppEvent::QuickShare(command));
+            }
+            Action::SharePane(pane) => {
+                let was_discovering = self.share_discovering();
+                self.model.quick_share_ui.navigate(
+                    pane,
+                    Instant::now(),
+                    self.model.settings.desktop.fast_animations,
+                );
+                self.sync_share_discovery(was_discovering);
+            }
+            Action::ShareBack => {
+                let was_discovering = self.share_discovering();
+                self.model.quick_share_ui.back();
+                self.sync_share_discovery(was_discovering);
+            }
             Action::Settings => self.open_settings()?,
             Action::CloseSettings => self.hide_settings(),
             Action::GenerateTaskToken | Action::CopyTaskToken | Action::RevokeTaskToken(_) => {
@@ -943,6 +987,10 @@ impl NativeHost {
                 self.settings_dirty = true;
             }
             Action::Preference(key, value) => self.save_preference(key, value)?,
+            Action::WidgetSlot(right) => {
+                self.form.widget_right = right;
+                self.settings_dirty = true;
+            }
             Action::Display(id) => {
                 let mut next = self.settings.current();
                 next.desktop.display_id = id;
@@ -1084,7 +1132,20 @@ impl NativeHost {
                     }
                 }
             }
-            Action::DragShelf(id) => self.drag_shelf(id)?,
+            Action::DragShelf(id) => self.drag_shelf(id, false)?,
+            Action::DragSharedFile(id) => {
+                if let Some(path) = self
+                    .model
+                    .quick_share
+                    .received
+                    .iter()
+                    .find(|entry| entry.item.id == id)
+                    .and_then(|entry| entry.item.path())
+                    && let Err(error) = shelf_drag::open_shell_path(path)
+                {
+                    tracing::warn!(%error, "Quick Share file could not be opened");
+                }
+            }
             Action::ShowVolume => {
                 self.model.set_volume_shown(true, Instant::now());
             }
@@ -1113,10 +1174,27 @@ impl NativeHost {
         );
         Ok(())
     }
-    fn drag_shelf(&mut self, id: uuid::Uuid) -> Result<()> {
-        let Some(item) = self
-            .model
-            .shelf
+    fn share_discovering(&self) -> bool {
+        self.model.view == NotchView::QuickShare
+            && self.model.quick_share_ui.pane() == SharePane::Radar
+    }
+
+    fn sync_share_discovery(&self, was_discovering: bool) {
+        let discovering = self.share_discovering();
+        if discovering != was_discovering {
+            let _ = self
+                .events
+                .send(AppEvent::QuickShare(ShareCommand::Discover(discovering)));
+        }
+    }
+
+    fn drag_shelf(&mut self, id: uuid::Uuid, shared: bool) -> Result<()> {
+        let entries = if shared {
+            &self.model.quick_share.received
+        } else {
+            &self.model.shelf
+        };
+        let Some(item) = entries
             .iter()
             .find(|e| e.item.id == id)
             .map(|e| e.item.clone())
@@ -1149,6 +1227,10 @@ impl NativeHost {
         Ok(())
     }
     fn save_preference(&mut self, key: Preference, value: i32) -> Result<()> {
+        if key == Preference::Glass && value == 1 && self.surface.check_glass().is_err() {
+            self.show_settings_error("settings.status.glassUnsupported");
+            return Ok(());
+        }
         let mut next = self.settings.current();
         match key.assign(&mut next, value) {
             Ok(()) => {
@@ -1341,10 +1423,11 @@ impl NativeHost {
                 let _ = ShowWindow(self.notch, SW_HIDE);
                 return Ok(());
             };
-            let placement = surface_placement(
+            let placement = place_notch(
                 monitor.rect,
                 monitor.scale,
                 self.model.settings.desktop.scale_percent,
+                self.model.settings.desktop.appearance.floating,
             )
             .ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?;
             self.scale = placement.scale;
@@ -1427,11 +1510,16 @@ impl NativeHost {
                     let _ = self.events.send(AppEvent::MascotActivity);
                 }
                 if let Some(monitor) = &self.selected {
+                    let gap = if self.model.settings.desktop.appearance.floating {
+                        (FLOATING_GAP * self.scale).round() as i32
+                    } else {
+                        0
+                    };
                     let geometry = MonitorGeometry {
                         x: monitor.rect.x as i32,
-                        y: monitor.rect.y as i32,
+                        y: monitor.rect.y as i32 + gap,
                         width: monitor.rect.w as i32,
-                        height: monitor.rect.h as i32,
+                        height: monitor.rect.h as i32 - gap,
                         scale: f64::from(self.scale),
                     };
                     let observation = self.background.context(geometry);
@@ -1458,9 +1546,8 @@ impl NativeHost {
             if !suppressed && self.model.animating(now) {
                 self.dirty = true;
             }
-            if now.duration_since(self.model.shelf_change) > Duration::from_millis(310) {
-                self.model.previous_shelf.clear();
-            }
+            self.model.shelf_removal.expire(now);
+            self.model.quick_share_ui.expire_removals(now);
             if let Some(language) = crate::infrastructure::windows::desktop_status::input_language()
             {
                 if self
@@ -1503,6 +1590,8 @@ impl NativeHost {
             || (self.model.settings.desktop.hide_in_fullscreen && self.model.fullscreen);
         if self.dirty && !suppressed {
             let shell = self.model.motion.sample(now);
+            let floating = self.model.settings.desktop.appearance.floating;
+            let wants_glass = self.model.settings.desktop.appearance.glass && self.model.expanded();
             let elapsed = now.duration_since(self.model.view_changed).as_secs_f32();
             let page_motion = if self.model.settings.desktop.fast_animations {
                 0.143
@@ -1513,7 +1602,8 @@ impl NativeHost {
             let old_scene = (elapsed < page_motion && self.model.previous_view != self.model.view)
                 .then(|| views::notch_scene(&self.model, self.model.previous_view, now));
 
-            let mut region_w_dips = shell.width + shell.ear * 2.;
+            let (ear, _) = shell.corners(floating);
+            let mut region_w_dips = shell.width + ear * 2.;
             let mut region_h_dips = shell.height.max(10.);
             for overlay_bounds in [
                 self.scene.overlay_bounds(),
@@ -1540,7 +1630,8 @@ impl NativeHost {
                 (SURFACE_WIDTH * self.scale).ceil() as i32,
                 region_w,
             );
-            if self.region != Some((left, region_w, region_h)) {
+            let region_key = (left, region_w, region_h, floating);
+            if self.region != Some(region_key) {
                 unsafe {
                     let region = CreateRectRgn(left, 0, left + region_w, region_h);
                     if SetWindowRgn(self.notch, Some(region), false) == 0 {
@@ -1548,8 +1639,9 @@ impl NativeHost {
                         return Err(windows::core::Error::from_thread());
                     }
                 }
-                self.region = Some((left, region_w, region_h));
+                self.region = Some(region_key);
             }
+            self.surface.set_glass(wants_glass)?;
             self.access.update(&self.scene, &self.model, self.scale);
             if let Some((owner, _, rect)) = self.keyboard_focus {
                 if owner == self.notch {
@@ -1557,7 +1649,14 @@ impl NativeHost {
                 }
             }
             self.surface.begin(None);
-            self.surface.shell(shell)?;
+            let tint = if self.model.view == NotchView::FileDrop {
+                0.65
+            } else if wants_glass {
+                f32::from(self.model.settings.desktop.appearance.tint_percent) / 100.
+            } else {
+                1.
+            };
+            self.surface.styled_shell(shell, floating, tint)?;
             self.surface.clip_shell()?;
             let slide = is_expanded(self.model.previous_view) && self.model.expanded();
             let blend = cubic_bezier((elapsed / page_motion).clamp(0., 1.), 0.42, 0., 0.58, 1.);
@@ -1612,7 +1711,8 @@ impl NativeHost {
             if let Some((old, start)) = &self.local_transition {
                 let t = start.elapsed().as_secs_f32() / 0.2;
                 if t < 1. && !old.overlay.is_empty() {
-                    self.surface.paint(&old.overlay, (1. - t) * alpha, (0., 0.))?;
+                    self.surface
+                        .paint(&old.overlay, (1. - t) * alpha, (0., 0.))?;
                 }
             }
             if !self.scene.overlay.is_empty() {
@@ -1620,6 +1720,24 @@ impl NativeHost {
                     .paint(&self.scene.overlay, alpha * local_alpha, (0., 0.))?;
             }
             self.surface.end()?;
+            let zones = if self.model.view == NotchView::FileDrop {
+                let target_body = Shell::for_view(self.model.view, self.model.nav).body();
+                views::file_drop_zones(target_body).map(|(destination, rect)| {
+                    let rect = rect.intersect(shell.body());
+                    (rect.w > 0. && rect.h > 0.).then_some((
+                        destination,
+                        RECT {
+                            left: (rect.x * self.scale).ceil() as i32,
+                            top: (rect.y * self.scale).ceil() as i32,
+                            right: ((rect.x + rect.w) * self.scale).ceil() as i32,
+                            bottom: ((rect.y + rect.h) * self.scale).ceil() as i32,
+                        },
+                    ))
+                })
+            } else {
+                [None; 2]
+            };
+            self.file_drop_zones.set(zones);
             self.inputs.sync(
                 self.notch,
                 if elapsed > 0.3 {

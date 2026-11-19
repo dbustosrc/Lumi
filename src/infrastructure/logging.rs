@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::i18n;
 
-const DEFAULT_FILTER: &str = "info";
+const DEFAULT_FILTER: &str = "info,rqs_lib=warn";
 const SERVICE_NAME: &str = "lumi";
 
 struct StructuredJsonFormatter {

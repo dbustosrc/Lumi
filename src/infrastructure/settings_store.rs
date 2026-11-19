@@ -18,6 +18,7 @@ impl SettingsRepository for TomlSettingsRepository {
     fn load(&self) -> Result<AppSettings, PortError> {
         if !self.path.exists() {
             let defaults = AppSettings::default();
+            defaults.validate()?;
             self.save(&defaults)?;
             return Ok(defaults);
         }

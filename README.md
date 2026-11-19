@@ -18,6 +18,7 @@ Lumi requires Windows 10 or 11 on x64 with hardware graphics support. If Windows
 - **Tasks.** Schedule and repeat tasks. Select a marked date in the month or week view to jump to its first task. Optional voice input requires a Wyoming Whisper server.
 - **Focus and water.** Run focus and break timers, set hydration goals and reminders, and view your drinking history.
 - **Shelf.** Store file references and text cards. Open files, copy text, or drag items out.
+- **Quick Share.** Send files to and receive files from nearby Android devices from the notch.
 - **Mimo.** The mascot reacts to the cursor, Bluetooth headphones, and Windows notification banners in the compact notch.
 - **Cursor activity.** Enable an activity event every 30 seconds from Settings or the tray. The cursor stays in place, and the feature is off by default.
 - **Desktop settings.** Choose hover or click to expand, select a monitor and scale, and configure full-screen hiding and system indicators. The interface is available in English and Spanish.
@@ -25,6 +26,12 @@ Lumi requires Windows 10 or 11 on x64 with hardware graphics support. If Windows
 ## Local data
 
 Lumi stores preferences, tasks, water history, Shelf items and logs in `%APPDATA%\Lumi`. A local build and an installed copy use the same data when run under the same Windows account. Installing an update preserves these files. Configure optional Music Assistant and Wyoming connections in Settings.
+
+## Quick Share
+
+Open **Settings → Quick Share** to set the PC name and make it visible to nearby devices. Visibility is off by default. Drag files over the notch, then drop them on **Shelf** to store a reference or on **Quick Share** to stage a transfer. In Quick Share, open **Devices** to choose a recipient. When you receive a request, compare the code on both devices before accepting. Drag received files out of the right tray. Lumi stores them in `%APPDATA%\Lumi\quick-share\received`. Clearing either tray removes its entries and keeps the files on disk.
+
+Quick Share uses the [rquickshare native transport](https://github.com/asulwer/rquickshare/tree/25433197491472e7510c4ffe45ba0394834f49ea/core_lib). The Quick Share name and icon identify Google’s sharing feature.
 
 ## Task API
 
@@ -58,7 +65,7 @@ Errors have an `{"error":"code"}` body. An invalid or revoked token returns 401,
 
 ## Build from source
 
-Install Rust 1.92 or later with the `x86_64-pc-windows-msvc` toolchain, Visual Studio C++ Build Tools, a Windows SDK with `rc.exe`, and PowerShell 7.
+Install Rust 1.92 or later with the `x86_64-pc-windows-msvc` toolchain, Visual Studio C++ Build Tools, a Windows SDK with `rc.exe`, and PowerShell 7. Install the [Protocol Buffers compiler](https://github.com/protocolbuffers/protobuf/releases) and add `protoc.exe` to `PATH` or set `PROTOC` to its full path.
 
 ```powershell
 git clone https://github.com/dbustosrc/Lumi.git

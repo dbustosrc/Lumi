@@ -15,6 +15,17 @@ use hover::{HOVER_LEAVE_GRACE, HOVER_OPEN_DELAY, HoverState};
 use notch::{NotchContext, NotchPage, NotchView, Peek, resolve_view};
 
 #[test]
+fn widget_page_navigation_respects_the_enable_setting() {
+    assert_eq!(NotchPage::Charging.step(1, true), NotchPage::Widgets);
+    assert_eq!(NotchPage::Widgets.step(1, true), NotchPage::Music);
+    assert_eq!(NotchPage::Widgets.step(-1, true), NotchPage::Charging);
+
+    assert_eq!(NotchPage::Charging.step(1, false), NotchPage::Music);
+    assert_eq!(NotchPage::Widgets.step(1, false), NotchPage::Music);
+    assert_eq!(NotchPage::Widgets.step(-1, false), NotchPage::Charging);
+}
+
+#[test]
 fn hover_opens_after_delay_and_reentry_cancels_leave_grace() {
     assert_eq!(HOVER_OPEN_DELAY, Duration::from_millis(250));
     assert_eq!(HOVER_LEAVE_GRACE, Duration::from_millis(120));

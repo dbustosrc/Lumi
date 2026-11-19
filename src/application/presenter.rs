@@ -17,6 +17,17 @@ pub struct ShelfEntry {
     pub thumbnail: Option<ShelfThumbnail>,
 }
 
+impl ShelfEntry {
+    pub fn new(item: ShelfItem, thumbnail: Option<ShelfThumbnail>) -> Self {
+        Self {
+            badge: item.badge(),
+            size_label: item.formatted_size(),
+            item,
+            thumbnail,
+        }
+    }
+}
+
 /// Lyrics availability for the current track.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LyricsAvailability {
@@ -50,6 +61,7 @@ pub enum ViewUpdate {
         tasks: Vec<TodoTask>,
     },
     Utility(super::reminders::UtilityState),
+    FocusToday(u64, u32),
     Water(crate::domain::water::WaterState),
     FocusReminder {
         phase: super::reminders::FocusPhase,
@@ -83,11 +95,15 @@ pub enum ViewUpdate {
     ActiveLyric(Option<usize>),
     LyricsMode(bool),
     ShelfItems(Vec<ShelfEntry>),
+    QuickShare(super::quick_share::Snapshot),
+    QuickShareAttention,
+    QuickShareStaged,
     ShelfThumbnail {
         id: uuid::Uuid,
         thumbnail: ShelfThumbnail,
     },
     ShelfDragHover(bool),
+    FileDropDestination(Option<super::events::FileDropDestination>),
     Tasks {
         tasks: Vec<TodoTask>,
         progress: TodoProgress,

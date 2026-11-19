@@ -31,6 +31,7 @@ pub struct UtilityState {
 pub struct Reminders {
     settings: ReminderSettings,
     focus: Countdown,
+    focus_duration: Duration,
     phase: FocusPhase,
     focus_cycles: u16,
     task: Option<(Uuid, String, Countdown)>,
@@ -43,10 +44,11 @@ impl Reminders {
         self.settings.task_start
     }
     pub fn new(settings: ReminderSettings) -> Self {
-        let focus = Countdown::new(minutes(settings.focus_minutes));
+        let focus_duration = minutes(settings.focus_minutes);
         Self {
             settings,
-            focus,
+            focus: Countdown::new(focus_duration),
+            focus_duration,
             phase: FocusPhase::Focus,
             focus_cycles: 0,
             task: None,
@@ -58,7 +60,7 @@ impl Reminders {
         let old_duration = self.phase_minutes();
         self.settings = settings.clone();
         if !self.focus.running() && old_duration != self.phase_minutes() {
-            self.focus = Countdown::new(minutes(self.phase_minutes()));
+            self.restart_phase();
         }
     }
     fn phase_minutes(&self) -> u16 {
@@ -68,17 +70,21 @@ impl Reminders {
             FocusPhase::LongBreak => self.settings.long_break_minutes,
         }
     }
+    fn restart_phase(&mut self) {
+        self.focus_duration = minutes(self.phase_minutes());
+        self.focus = Countdown::new(self.focus_duration);
+    }
     pub fn toggle_focus(&mut self, now: Instant) {
         self.focus.toggle(now);
     }
     pub fn select_phase(&mut self, phase: FocusPhase) {
         self.phase = phase;
-        self.focus = Countdown::new(minutes(self.phase_minutes()));
+        self.restart_phase();
     }
     pub fn reset_focus(&mut self) {
         self.phase = FocusPhase::Focus;
         self.focus_cycles = 0;
-        self.focus = Countdown::new(minutes(self.settings.focus_minutes));
+        self.restart_phase();
     }
     pub fn start_task(&mut self, id: Uuid, title: String, now: Instant) -> Option<ReminderNotice> {
         self.last_notice = None;
@@ -125,7 +131,7 @@ impl Reminders {
                 }
                 _ => FocusPhase::Focus,
             };
-            self.focus = Countdown::new(minutes(self.phase_minutes()));
+            self.restart_phase();
             notices.push(ReminderNotice {
                 key: if self.phase == FocusPhase::Focus {
                     "desktopUi.focus"
@@ -164,7 +170,7 @@ impl Reminders {
             phase: self.phase,
             focus_seconds: seconds(self.focus.remaining(now)),
             focus_running: self.focus.running(),
-            focus_total_seconds: u64::from(self.phase_minutes()) * 60,
+            focus_total_seconds: self.focus_duration.as_secs(),
             task_id: self.task.as_ref().map(|task| task.0),
             task_title: self
                 .task

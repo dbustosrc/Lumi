@@ -11,9 +11,22 @@ use crate::domain::notch::NotchPage;
 use crate::domain::ports::PortError;
 use crate::domain::shelf::ShelfThumbnail;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileDropDestination {
+    Shelf,
+    QuickShare,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropHover {
+    Text,
+    Files(Option<FileDropDestination>),
+}
+
 /// Actions requested by the user through the UI.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UserIntent {
+    RevealQuickShare,
     CalendarMove(i32),
     ToggleFocus,
     SelectFocusPhase(super::reminders::FocusPhase),
@@ -62,6 +75,7 @@ pub enum UserIntent {
 /// asynchronous results and user intents.
 #[derive(Debug)]
 pub enum AppEvent {
+    QuickShare(super::quick_share::Command),
     TaskApi {
         command: super::todo_service::TaskCommand,
         reply: tokio::sync::oneshot::Sender<
@@ -104,8 +118,11 @@ pub enum AppEvent {
         is_newly_connected: bool,
     },
     VoiceTranscribed(Result<String, PortError>),
-    FileDragHover(bool),
-    FilesDropped(Vec<PathBuf>),
+    FileDragHover(Option<DropHover>),
+    FilesDropped {
+        paths: Vec<PathBuf>,
+        destination: FileDropDestination,
+    },
     FilesPicked(Vec<PathBuf>),
     ShelfThumbnailLoaded {
         id: Uuid,

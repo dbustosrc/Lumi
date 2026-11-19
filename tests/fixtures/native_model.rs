@@ -9,12 +9,14 @@ use crate::adapters::native::mascot::{
 };
 use crate::adapters::native::model::{
     MASCOT_PROXIMITY_DIPS, Motion, Rect, SURFACE_HEIGHT, SURFACE_WIDTH, Shell, UiModel,
-    surface_placement,
+    FLOATING_GAP, place_notch, surface_placement,
 };
+use crate::adapters::native::quick_share::{self, Pane as SharePane};
 use crate::adapters::native::scene::{Action, Field, Paint, Preference, Scene};
 use crate::adapters::native::{settings, settings::SettingsScrollbar, settings::SettingsUi, views};
-use crate::application::events::UserIntent;
+use crate::application::events::{FileDropDestination, UserIntent};
 use crate::application::presenter::{ShelfEntry, ViewUpdate, VoiceState};
+use crate::application::quick_share::{Command as ShareCommand, Device, Snapshot, Tray};
 use crate::application::reminders::{FocusPhase, UtilityState};
 use crate::application::settings::AppSettings;
 use crate::domain::device::{HeadphoneStatus, PowerStatus};
@@ -47,6 +49,105 @@ fn shell_keeps_compact_and_expanded_views_centered_with_navigation_height() {
         assert_eq!((with_nav.width, with_nav.height), (nav_width, nav_height));
         let nav_body = with_nav.body();
         assert_eq!(nav_body.x + nav_body.w / 2., SURFACE_WIDTH / 2.);
+    }
+}
+
+#[test]
+fn quick_share_trays_match_todo_list_transition_when_expanding_and_collapsing() {
+    for fast in [false, true] {
+        for (pane, direction) in [(SharePane::Send, 1.), (SharePane::Receive, -1.)] {
+            let start = Instant::now();
+            let mut model = UiModel::new(AppSettings::default());
+            model.settings.desktop.fast_animations = fast;
+            let mut share = quick_share::Ui::default();
+            share.navigate(pane, start, fast);
+            model.set_list_expanded(true, start);
+            for millis in [0, 25, 60, 100, 180, 220] {
+                let now = start + Duration::from_millis(millis);
+                assert!(
+                    (share.expansion(now, fast) - direction * model.list_amount(now)).abs()
+                        < 0.0001,
+                    "{pane:?} expansion differs from To-Do at {millis}ms (fast={fast})"
+                );
+            }
+
+            let collapse_at = start + Duration::from_millis(250);
+            share.navigate(SharePane::Compact, collapse_at, fast);
+            model.set_list_expanded(false, collapse_at);
+            for millis in [0, 25, 60, 100, 180, 220] {
+                let now = collapse_at + Duration::from_millis(millis);
+                assert!(
+                    (share.expansion(now, fast) - direction * model.list_amount(now)).abs()
+                        < 0.0001,
+                    "{pane:?} collapse differs from To-Do at {millis}ms (fast={fast})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn quick_share_back_restores_the_compact_or_expanded_origin_tray() {
+    for (origin, detail) in [
+        (SharePane::Compact, SharePane::Radar),
+        (SharePane::Send, SharePane::Radar),
+        (SharePane::Compact, SharePane::Request),
+        (SharePane::Receive, SharePane::Request),
+    ] {
+        let now = Instant::now();
+        let mut share = quick_share::Ui::default();
+        share.navigate(origin, now, false);
+        share.navigate(detail, now + Duration::from_millis(10), false);
+        assert_eq!(share.pane(), detail);
+
+        share.back();
+
+        assert_eq!(share.pane(), origin, "Back from {detail:?} lost its origin");
+        let expected = match origin {
+            SharePane::Send => 1.,
+            SharePane::Receive => -1.,
+            SharePane::Compact => 0.,
+            _ => unreachable!(),
+        };
+        assert_eq!(share.expansion(now + Duration::from_millis(11), false), expected);
+    }
+}
+
+#[test]
+fn quick_share_os_file_drop_scene_renders_two_translucent_destination_zones() {
+    let mut model = UiModel::new(AppSettings::default());
+    let body = Shell::for_view(NotchView::FileDrop, false).body();
+    let zones = views::file_drop_zones(body);
+    assert_eq!(
+        zones.map(|(destination, _)| destination),
+        [FileDropDestination::Shelf, FileDropDestination::QuickShare]
+    );
+    let [(_, shelf), (_, quick_share)] = zones;
+    assert!(shelf.w > 0. && quick_share.w > 0.);
+    assert!(shelf.x + shelf.w < quick_share.x);
+    assert!(shelf.y >= body.y && shelf.y + shelf.h <= body.y + body.h);
+    assert!(quick_share.y >= body.y && quick_share.y + quick_share.h <= body.y + body.h);
+
+    for active in [FileDropDestination::Shelf, FileDropDestination::QuickShare] {
+        model.file_drop_destination = Some(active);
+        let scene = views::notch_scene(&model, NotchView::FileDrop, Instant::now());
+        let fills: Vec<_> = scene
+            .paint
+            .iter()
+            .filter_map(|paint| match paint {
+                Paint::AlphaRound(rect, _, _, alpha) => Some((*rect, *alpha)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fills.len(), 2);
+        for (destination, rect) in [
+            (FileDropDestination::Shelf, shelf),
+            (FileDropDestination::QuickShare, quick_share),
+        ] {
+            let fill = fills.iter().find(|(candidate, _)| *candidate == rect).unwrap();
+            assert_eq!(fill.1, if destination == active { 0.25 } else { 0.12 });
+        }
+        assert!(scene_has_text(&scene, "Quick Share"));
     }
 }
 
@@ -740,6 +841,298 @@ fn navigation_stays_open_between_expanded_pages_and_closes_on_compact_view() {
 }
 
 #[test]
+fn quick_share_is_a_navigable_page_with_its_own_view() {
+    use crate::domain::notch::{NotchContext, NotchPage, resolve_view};
+
+    assert_eq!(NotchPage::Shelf.step(1, true), NotchPage::QuickShare);
+    assert_eq!(NotchPage::QuickShare.step(-1, true), NotchPage::Shelf);
+    assert_eq!(NotchPage::QuickShare.step(1, true), NotchPage::Todo);
+    assert_eq!(NotchPage::QuickShare.view(), NotchView::QuickShare);
+    assert_eq!(
+        resolve_view(&NotchContext {
+            is_hovered: true,
+            page: NotchPage::QuickShare,
+            ..NotchContext::default()
+        }),
+        NotchView::QuickShare
+    );
+}
+
+#[test]
+fn quick_share_scene_exposes_send_receive_and_request_actions() {
+    use crate::adapters::native::quick_share::Pane;
+    use crate::application::quick_share::{Command, Request, Snapshot};
+
+    let mut model = UiModel::new(AppSettings::default());
+    let now = Instant::now();
+
+    let compact = views::notch_scene(&model, NotchView::QuickShare, now);
+    assert!(compact.hits.iter().any(|hit| {
+        hit.action == Action::SharePane(Pane::Send)
+    }));
+    assert!(compact.hits.iter().any(|hit| {
+        hit.action == Action::SharePane(Pane::Receive)
+    }));
+    assert!(compact.hits.iter().any(|hit| {
+        hit.action == Action::Share(Command::Browse)
+    }));
+
+    model.quick_share_ui.navigate(Pane::Send, now, false);
+    let send = views::notch_scene(&model, NotchView::QuickShare, now);
+    assert!(send.hits.iter().any(|hit| {
+        hit.action == Action::SharePane(Pane::Radar)
+    }));
+    model.quick_share_ui.navigate(Pane::Radar, now, false);
+    let radar = views::notch_scene(&model, NotchView::QuickShare, now);
+    assert!(radar.hits.iter().any(|hit| hit.action == Action::ShareBack));
+
+    model.quick_share_ui.navigate(Pane::Receive, now, false);
+    model.quick_share_ui.navigate(Pane::Request, now, false);
+    model.quick_share.request = Some(Request {
+        id: "request-id".into(),
+        sender: "test device".into(),
+        pin: "123456".into(),
+        files: vec!["test.txt".into()],
+        bytes: 4,
+    });
+    let request = views::notch_scene(&model, NotchView::QuickShare, now);
+    assert!(request.hits.iter().any(|hit| hit.action == Action::ShareBack));
+    for accept in [false, true] {
+        assert!(request.hits.iter().any(|hit| {
+            hit.action == Action::Share(Command::Decide {
+                id: "request-id".into(),
+                accept,
+            })
+        }));
+    }
+
+    model.apply(ViewUpdate::QuickShare(Snapshot::default()), now);
+    assert_eq!(model.quick_share_ui.pane(), Pane::Receive);
+}
+
+#[test]
+fn shelf_and_quick_share_removals_fade_for_280ms_and_keep_survivors_clickable() {
+    let removed = shelf_entry(41, "removed-file.txt");
+    let survivor = shelf_entry(42, "kept-file.txt");
+
+    let shelf_start = Instant::now();
+    let mut shelf = UiModel::new(AppSettings::default());
+    shelf.apply(
+        ViewUpdate::ShelfItems(vec![removed.clone(), survivor.clone()]),
+        shelf_start,
+    );
+    let before_clear = views::notch_scene(&shelf, NotchView::Shelf, shelf_start);
+    assert!(before_clear.hits.iter().any(|hit| {
+        hit.action == Action::Intent(UserIntent::ClearShelf)
+    }));
+    let removed_card = before_clear
+        .hits
+        .iter()
+        .find(|hit| hit.action == Action::DragShelf(removed.item.id))
+        .unwrap();
+    shelf.mouse = (
+        removed_card.rect.x + removed_card.rect.w / 2.,
+        removed_card.rect.y + removed_card.rect.h / 2.,
+    );
+    let hovered = views::notch_scene(&shelf, NotchView::Shelf, shelf_start);
+    assert!(hovered.hits.iter().any(|hit| {
+        hit.action == Action::Intent(UserIntent::RemoveShelfItem(removed.item.id))
+    }));
+
+    let shelf_removed_at = shelf_start + Duration::from_millis(500);
+    shelf.apply(
+        ViewUpdate::ShelfItems(vec![survivor.clone()]),
+        shelf_removed_at,
+    );
+    for (elapsed, opacity, ghost) in [
+        (0, Some(1.), true),
+        (140, Some(0.5), true),
+        (310, None, false),
+    ] {
+        assert_removal_frame(
+            &mut shelf,
+            NotchView::Shelf,
+            shelf_removed_at + Duration::from_millis(elapsed),
+            &removed,
+            &survivor,
+            None,
+            opacity,
+            ghost,
+        );
+    }
+
+    let share_start = Instant::now();
+    let mut share = UiModel::new(AppSettings::default());
+    share.apply(
+        ViewUpdate::View(NotchView::QuickShare),
+        share_start,
+    );
+    share
+        .quick_share_ui
+        .navigate(SharePane::Receive, share_start, false);
+    share.apply(
+        ViewUpdate::QuickShare(Snapshot {
+            received: vec![removed.clone(), survivor.clone()],
+            ..Snapshot::default()
+        }),
+        share_start,
+    );
+    let before_clear_at = share_start + Duration::from_millis(500);
+    let before_clear = views::notch_scene(&share, NotchView::QuickShare, before_clear_at);
+    assert!(before_clear.hits.iter().any(|hit| {
+        hit.action == Action::Share(ShareCommand::Clear(Tray::Received))
+    }));
+    let removed_card = before_clear
+        .hits
+        .iter()
+        .find(|hit| hit.action == Action::DragSharedFile(removed.item.id))
+        .unwrap();
+    share.mouse = (
+        removed_card.rect.x + removed_card.rect.w / 2.,
+        removed_card.rect.y + removed_card.rect.h / 2.,
+    );
+    let hovered = views::notch_scene(&share, NotchView::QuickShare, before_clear_at);
+    assert!(hovered.hits.iter().any(|hit| {
+        hit.action == Action::Share(ShareCommand::Remove(
+            Tray::Received,
+            removed.item.id,
+        ))
+    }));
+
+    let share_removed_at = before_clear_at;
+    share.apply(
+        ViewUpdate::QuickShare(Snapshot {
+            received: vec![survivor.clone()],
+            ..Snapshot::default()
+        }),
+        share_removed_at,
+    );
+    for (elapsed, opacity, ghost) in [
+        (0, Some(1.), true),
+        (140, Some(0.5), true),
+        (310, None, false),
+    ] {
+        assert_removal_frame(
+            &mut share,
+            NotchView::QuickShare,
+            share_removed_at + Duration::from_millis(elapsed),
+            &removed,
+            &survivor,
+            Some(Tray::Received),
+            opacity,
+            ghost,
+        );
+    }
+}
+
+#[test]
+fn quick_share_clear_uses_the_shared_fade_for_all_outgoing_files() {
+    let file = shelf_entry(51, "cleared-file.txt");
+    let start = Instant::now();
+    let mut model = UiModel::new(AppSettings::default());
+    model.apply(ViewUpdate::View(NotchView::QuickShare), start);
+    model
+        .quick_share_ui
+        .navigate(SharePane::Send, start, false);
+    model.apply(
+        ViewUpdate::QuickShare(Snapshot {
+            outgoing: vec![file.clone()],
+            ..Snapshot::default()
+        }),
+        start,
+    );
+
+    let clear_at = start + Duration::from_millis(500);
+    let before_clear = views::notch_scene(&model, NotchView::QuickShare, clear_at);
+    assert!(before_clear.hits.iter().any(|hit| {
+        hit.action == Action::Share(ShareCommand::Clear(Tray::Outgoing))
+    }));
+    model.apply(
+        ViewUpdate::QuickShare(Snapshot::default()),
+        clear_at,
+    );
+
+    let halfway = clear_at + Duration::from_millis(140);
+    let scene = views::notch_scene(&model, NotchView::QuickShare, halfway);
+    assert_eq!(scene_opacity(&scene, "cleared-file.txt"), Some(0.5));
+    assert!(scene_has_text(&scene, "cleared-file.txt"));
+    assert!(model.animating(halfway));
+    assert!(!scene.hits.iter().any(|hit| {
+        hit.action == Action::Share(ShareCommand::Remove(Tray::Outgoing, file.item.id))
+    }));
+
+    let finished = views::notch_scene(
+        &model,
+        NotchView::QuickShare,
+        clear_at + Duration::from_millis(310),
+    );
+    assert_eq!(scene_opacity(&finished, "cleared-file.txt"), None);
+    assert!(!scene_has_text(&finished, "cleared-file.txt"));
+}
+
+#[test]
+fn quick_share_radar_rotates_pulses_and_keeps_device_send_clickable() {
+    let start = Instant::now();
+    let mut model = UiModel::new(AppSettings::default());
+    model.start = start;
+    model.apply(ViewUpdate::View(NotchView::QuickShare), start);
+    model.quick_share_ui.navigate(SharePane::Radar, start, false);
+    model.apply(
+        ViewUpdate::QuickShare(Snapshot {
+            outgoing: vec![shelf_entry(61, "send.txt")],
+            devices: vec![Device {
+                id: "nearby-id".into(),
+                name: "Nearby device".into(),
+            }],
+            ..Snapshot::default()
+        }),
+        start,
+    );
+
+    let first_at = start + Duration::from_millis(200);
+    let second_at = start + Duration::from_millis(800);
+    assert!(!model.quick_share.visible);
+    assert!(model.animating(first_at));
+    assert!(model.animating(second_at));
+
+    let first = views::notch_scene(&model, NotchView::QuickShare, first_at);
+    let second = views::notch_scene(&model, NotchView::QuickShare, second_at);
+    let leader = |scene: &Scene| {
+        scene.paint.iter().find_map(|paint| match paint {
+            Paint::Line(_, _, x, y, 0x69b4fa, _) => Some((*x, *y)),
+            _ => None,
+        })
+    };
+    assert_ne!(leader(&first), leader(&second));
+    let pulse = |scene: &Scene| {
+        scene.paint.iter().find_map(|paint| match paint {
+            Paint::Ellipse {
+                center,
+                radius,
+                color: 0x73b5ff,
+                alpha,
+                stroke: Some(1.1),
+            } => Some((*center, *radius, *alpha)),
+            _ => None,
+        })
+    };
+    let first_pulse = pulse(&first).unwrap();
+    let second_pulse = pulse(&second).unwrap();
+    assert_eq!(first_pulse.0, second_pulse.0);
+    assert_ne!(first_pulse.1, second_pulse.1);
+    assert_ne!(first_pulse.2, second_pulse.2);
+    for scene in [&first, &second] {
+        assert!(scene.hits.iter().any(|hit| {
+            hit.action == Action::Share(ShareCommand::Send("nearby-id".into()))
+        }));
+    }
+
+    let changed_view_at = second_at + Duration::from_millis(1);
+    model.apply(ViewUpdate::View(NotchView::Shelf), changed_view_at);
+    assert!(!model.animating(changed_view_at + Duration::from_secs(1)));
+}
+
+#[test]
 fn hud_update_preserves_todo_reminder_and_exposes_snooze_action() {
     let mut model = UiModel::new(AppSettings::default());
     let now = Instant::now();
@@ -794,6 +1187,43 @@ fn surface_placement_keeps_monitor_center_through_dpi_scale_changes() {
         assert!((placement.bounds.x + placement.bounds.w / 2. - center_x).abs() < 1.);
         assert_eq!(placement.bounds.y, center_y);
     }
+}
+
+#[test]
+fn floating_placement_adds_the_scaled_top_gap_without_changing_surface_size() {
+    let monitor = Rect::new(-1920., -200., 2560., 1440.);
+    let scale = 1.25 * 130. / 100.;
+    let attached = place_notch(monitor, 1.25, 130, false).unwrap();
+    let floating = place_notch(monitor, 1.25, 130, true).unwrap();
+
+    assert_eq!(floating.scale, scale);
+    assert_eq!(attached.bounds.y, monitor.y);
+    assert_eq!(floating.bounds.y, monitor.y + (FLOATING_GAP * scale).round());
+    assert_eq!(floating.bounds.x, attached.bounds.x);
+    assert_eq!(floating.bounds.w, attached.bounds.w);
+    assert_eq!(floating.bounds.h, attached.bounds.h);
+}
+
+#[test]
+fn focus_day_accumulates_completions_and_resets_on_date_rollover() {
+    use crate::domain::widgets::FocusDay;
+
+    let yesterday = date(2026, 11, 11);
+    let today = date(2026, 11, 12);
+    let previous = FocusDay {
+        date: yesterday,
+        minutes: 75,
+        sessions: 3,
+    };
+
+    assert_eq!(previous.for_date(today), FocusDay::empty(today));
+    let first = previous.complete(today, 25);
+    assert_eq!(first.minutes, 25);
+    assert_eq!(first.sessions, 1);
+
+    let second = first.complete(today, 40);
+    assert_eq!(second.minutes, 65);
+    assert_eq!(second.sessions, 2);
 }
 
 #[test]
@@ -1160,12 +1590,170 @@ fn mouse_move_preference_defaults_off_and_persists_as_a_boolean() {
     assert!(!disabled.is_mouse_move_enabled);
 }
 
+#[test]
+fn appearance_and_status_ring_settings_expose_and_select_the_configured_values() {
+    const WIDTH: f32 = 800.;
+    const HEIGHT: f32 = 600.;
+    let mut model = UiModel::new(AppSettings::default());
+    Preference::Floating.assign(&mut model.settings, 1).unwrap();
+    Preference::Glass.assign(&mut model.settings, 1).unwrap();
+    Preference::GlassTint.assign(&mut model.settings, 55).unwrap();
+    Preference::StatusRing.assign(&mut model.settings, 2).unwrap();
+    assert_eq!(Preference::Floating.value(&model.settings), 1);
+    assert_eq!(Preference::Glass.value(&model.settings), 1);
+    assert_eq!(Preference::GlassTint.value(&model.settings), 55);
+    assert_eq!(Preference::StatusRing.value(&model.settings), 2);
+
+    let now = Instant::now();
+    let mut appearance = SettingsUi::new(&model.settings, true);
+    appearance.section = 2;
+    appearance.changed = now - Duration::from_secs(1);
+    let (appearance_scene, _) =
+        settings::settings_scene(&model, &appearance, &[], WIDTH, HEIGHT, now);
+    for value in 0..=1 {
+        assert!(appearance_scene.hits.iter().any(|hit| {
+            hit.action == Action::Preference(Preference::Floating, value)
+        }));
+    }
+    assert!(appearance_scene.hits.iter().any(|hit| {
+        hit.action == Action::Preference(Preference::Glass, 0)
+    }));
+
+    let mut ring = SettingsUi::new(&model.settings, true);
+    ring.section = 12;
+    ring.changed = now - Duration::from_secs(1);
+    let (ring_scene, _) = settings::settings_scene(&model, &ring, &[], WIDTH, HEIGHT, now);
+    for value in 0..4 {
+        assert!(ring_scene.hits.iter().any(|hit| {
+            hit.action == Action::Preference(Preference::StatusRing, value)
+        }));
+    }
+    let selected = ring_scene
+        .hits
+        .iter()
+        .find(|hit| hit.action == Action::Preference(Preference::StatusRing, 2))
+        .unwrap();
+    assert!(ring_scene.paint.iter().any(|paint| {
+        matches!(paint, Paint::Border(rect, _, 0x168cff, _) if *rect == selected.rect.inset(0.5))
+    }));
+
+    let mut widgets = SettingsUi::new(&model.settings, true);
+    widgets.section = 13;
+    widgets.changed = now - Duration::from_secs(1);
+    let (left_widgets, _) = settings::settings_scene(&model, &widgets, &[], WIDTH, HEIGHT, now);
+    assert!(left_widgets.hits.iter().any(|hit| {
+        hit.action == Action::Preference(Preference::WidgetsEnabled, 1)
+    }));
+    assert!(left_widgets
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::WidgetSlot(false)));
+    assert!(left_widgets
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::WidgetSlot(true)));
+    for value in 0..7 {
+        assert!(left_widgets.hits.iter().any(|hit| {
+            hit.action == Action::Preference(Preference::WidgetLeft, value)
+        }));
+    }
+
+    widgets.widget_right = true;
+    let (right_widgets, _) = settings::settings_scene(&model, &widgets, &[], WIDTH, HEIGHT, now);
+    for value in 0..7 {
+        assert!(right_widgets.hits.iter().any(|hit| {
+            hit.action == Action::Preference(Preference::WidgetRight, value)
+        }));
+    }
+}
+
 fn scene_has_icon(scene: &Scene, name: &str) -> bool {
     scene
         .paint
         .iter()
         .chain(&scene.overlay)
         .any(|paint| matches!(paint, Paint::Icon(_, glyph, _) if glyph == name))
+}
+
+fn assert_removal_frame(
+    model: &mut UiModel,
+    view: NotchView,
+    now: Instant,
+    removed: &ShelfEntry,
+    survivor: &ShelfEntry,
+    tray: Option<Tray>,
+    expected_opacity: Option<f32>,
+    ghost_visible: bool,
+) {
+    let scene = views::notch_scene(model, view, now);
+    match expected_opacity {
+        Some(expected) => assert!(
+            (scene_opacity(&scene, &removed.item.display_name).unwrap() - expected).abs() < 0.0001
+        ),
+        None => assert_eq!(scene_opacity(&scene, &removed.item.display_name), None),
+    }
+    assert_eq!(scene_has_text(&scene, &removed.item.display_name), ghost_visible);
+    assert!(scene_has_text(&scene, &survivor.item.display_name));
+
+    let (removed_open, removed_remove, survivor_open, survivor_remove) = match tray {
+        Some(tray) => (
+            Action::DragSharedFile(removed.item.id),
+            Action::Share(ShareCommand::Remove(tray, removed.item.id)),
+            Action::DragSharedFile(survivor.item.id),
+            Action::Share(ShareCommand::Remove(tray, survivor.item.id)),
+        ),
+        None => (
+            Action::DragShelf(removed.item.id),
+            Action::Intent(UserIntent::RemoveShelfItem(removed.item.id)),
+            Action::DragShelf(survivor.item.id),
+            Action::Intent(UserIntent::RemoveShelfItem(survivor.item.id)),
+        ),
+    };
+    assert!(!scene
+        .hits
+        .iter()
+        .any(|hit| hit.action == removed_open || hit.action == removed_remove));
+    let survivor_hit = scene
+        .hits
+        .iter()
+        .find(|hit| hit.action == survivor_open)
+        .unwrap();
+    model.mouse = (
+        survivor_hit.rect.x + survivor_hit.rect.w / 2.,
+        survivor_hit.rect.y + survivor_hit.rect.h / 2.,
+    );
+    let hovered = views::notch_scene(model, view, now);
+    assert!(hovered.hits.iter().any(|hit| hit.action == survivor_remove));
+}
+
+fn scene_opacity(scene: &Scene, text: &str) -> Option<f32> {
+    let text_index = scene.paint.iter().position(|paint| {
+        matches!(paint, Paint::Text(_, value, _, _, _, _) if value == text)
+    })?;
+    scene.paint[..text_index]
+        .iter()
+        .rev()
+        .find_map(|paint| match paint {
+            Paint::Opacity(opacity) => Some(*opacity),
+            _ => None,
+        })
+}
+
+fn shelf_entry(id: u128, name: &str) -> ShelfEntry {
+    ShelfEntry {
+        item: ShelfItem {
+            id: Uuid::from_u128(id),
+            content: ShelfContent::Text(name.into()),
+            display_name: name.into(),
+            size_bytes: name.len() as u64,
+            is_directory: false,
+            kind: ShelfItemKind::Text,
+            added_at: Utc.with_ymd_and_hms(2026, 11, 3, 12, 0, 0).unwrap(),
+        },
+        badge: "TXT".into(),
+        size_label: format!("{} B", name.len()),
+        thumbnail: None,
+    }
 }
 
 fn scene_has_text(scene: &Scene, text: &str) -> bool {

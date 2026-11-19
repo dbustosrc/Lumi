@@ -3,9 +3,28 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::domain::ports::PortError;
+use crate::domain::{
+    ports::PortError,
+    widgets::{CITIES, StatusRing, Widget},
+};
 
-pub const SETTINGS_SCHEMA_VERSION: u32 = 4;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 7;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuickShareSettings {
+    pub device_name: String,
+    pub visible: bool,
+}
+
+impl Default for QuickShareSettings {
+    fn default() -> Self {
+        Self {
+            device_name: std::env::var("COMPUTERNAME").unwrap_or_default(),
+            visible: false,
+        }
+    }
+}
 
 /// UI language preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -30,7 +49,7 @@ pub struct MusicAssistantSettings {
     pub server_url: String,
     /// Long-lived token created in Music Assistant (required for schema >= 28).
     pub token: String,
-    /// Queue (player) to follow. Empty plays locally on Lumi.
+    /// Queue (player) to follow. Empty follows the active queue.
     pub queue_id: String,
 }
 
@@ -80,6 +99,7 @@ pub struct AppSettings {
     pub is_lyrics_enabled: bool,
     pub music_assistant: MusicAssistantSettings,
     pub wyoming: WyomingSettings,
+    pub quick_share: QuickShareSettings,
     pub desktop: DesktopSettings,
     pub reminders: ReminderSettings,
     pub water: crate::domain::water::WaterPlan,
@@ -97,6 +117,7 @@ impl Default for AppSettings {
             is_lyrics_enabled: true,
             music_assistant: MusicAssistantSettings::default(),
             wyoming: WyomingSettings::default(),
+            quick_share: QuickShareSettings::default(),
             desktop: DesktopSettings::default(),
             reminders: ReminderSettings::default(),
             water: crate::domain::water::WaterPlan::default(),
@@ -124,6 +145,9 @@ pub struct DesktopSettings {
     pub popup_headphones: bool,
     pub calendar_starts_monday: bool,
     pub calendar_week_view: bool,
+    pub status_ring: StatusRing,
+    pub appearance: NotchAppearance,
+    pub widgets: WidgetSettings,
 }
 impl Default for DesktopSettings {
     fn default() -> Self {
@@ -145,9 +169,54 @@ impl Default for DesktopSettings {
             popup_headphones: true,
             calendar_starts_monday: false,
             calendar_week_view: false,
+            status_ring: StatusRing::default(),
+            appearance: NotchAppearance::default(),
+            widgets: WidgetSettings::default(),
         }
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotchAppearance {
+    pub floating: bool,
+    pub glass: bool,
+    pub tint_percent: u16,
+}
+impl Default for NotchAppearance {
+    fn default() -> Self {
+        Self {
+            floating: false,
+            glass: false,
+            tint_percent: 40,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WidgetSettings {
+    pub enabled: bool,
+    pub left: Widget,
+    pub right: Widget,
+    pub first_city: u16,
+    pub second_city: u16,
+    pub countdown_date: String,
+    pub countdown_name: String,
+}
+impl Default for WidgetSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            left: Widget::Week,
+            right: Widget::Water,
+            first_city: 0,
+            second_city: 1,
+            countdown_date: String::new(),
+            countdown_name: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReminderSettings {
@@ -193,6 +262,13 @@ impl AppSettings {
                 "Wyoming host and language are required",
             ));
         }
+        let name = self.quick_share.device_name.trim();
+        if name.is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
+            return Err(PortError::new(
+                "quickShare.invalidName",
+                "invalid Quick Share device name",
+            ));
+        }
         if self.music_assistant.is_enabled
             && !url::Url::parse(&self.music_assistant.server_url).is_ok_and(|url| {
                 matches!(url.scheme(), "http" | "https" | "ws" | "wss") && url.host_str().is_some()
@@ -219,6 +295,24 @@ impl AppSettings {
             return Err(PortError::new(
                 "settings.status.invalidNumber",
                 "invalid size, time or port",
+            ));
+        }
+        let widgets = &self.desktop.widgets;
+        if self.desktop.appearance.tint_percent > 100
+            || usize::from(widgets.first_city) >= CITIES.len()
+            || usize::from(widgets.second_city) >= CITIES.len()
+        {
+            return Err(PortError::new(
+                "settings.status.invalidNumber",
+                "invalid tint or city",
+            ));
+        }
+        if !widgets.countdown_date.is_empty()
+            && chrono::NaiveDate::parse_from_str(&widgets.countdown_date, "%Y-%m-%d").is_err()
+        {
+            return Err(PortError::new(
+                "settings.status.invalidDate",
+                "expected YYYY-MM-DD",
             ));
         }
         if !self.water.is_valid() {

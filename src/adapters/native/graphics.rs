@@ -1,4 +1,5 @@
 //! One shared native graphics device; window surfaces own no application state.
+use super::composition::{Runtime, WindowComposition};
 use super::model::{Rect, SURFACE_WIDTH, Shell};
 use super::scene::{Paint, PathSegment};
 use std::collections::{HashMap, HashSet};
@@ -8,7 +9,6 @@ use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::DirectComposition::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
@@ -21,7 +21,7 @@ pub struct GraphicsDevice {
     d2d: ID2D1Device,
     factory: ID2D1Factory1,
     write: IDWriteFactory,
-    composition: IDCompositionDevice,
+    composition: Rc<Runtime>,
     round_stroke: ID2D1StrokeStyle,
 }
 impl GraphicsDevice {
@@ -46,7 +46,7 @@ impl GraphicsDevice {
                 D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let d2d = factory.CreateDevice(&dxgi_device)?;
             let write: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let composition: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
+            let composition = Runtime::acquire()?;
             let round_stroke = factory
                 .CreateStrokeStyle(
                     &D2D1_STROKE_STYLE_PROPERTIES1 {
@@ -92,8 +92,7 @@ pub struct Surface {
     vectors: HashMap<(String, u32, u32, u32), ID2D1SvgDocument>,
     used_vectors: HashSet<(String, u32, u32, u32)>,
     swap: IDXGISwapChain1,
-    _target: Option<IDCompositionTarget>,
-    _visual: Option<IDCompositionVisual>,
+    composition: Option<WindowComposition>,
     hwnd: HWND,
     bitmap: Option<ID2D1Bitmap1>,
     brush: ID2D1SolidColorBrush,
@@ -106,6 +105,7 @@ pub struct Surface {
     images: HashMap<(usize, u32, u32), ID2D1Bitmap1>,
     used_images: HashSet<(usize, u32, u32)>,
     shell_mask: Option<ID2D1Geometry>,
+    glass_mask: Option<(Shell, bool, f32)>,
 }
 impl Surface {
     pub fn new(
@@ -138,11 +138,8 @@ impl Surface {
             let context = device
                 .d2d
                 .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
-            let target = device.composition.CreateTargetForHwnd(hwnd, false)?;
-            let visual = device.composition.CreateVisual()?;
-            visual.SetContent(&swap)?;
-            target.SetRoot(&visual)?;
-            device.composition.Commit()?;
+            let composition = WindowComposition::new(device.composition.clone(), hwnd, &swap)?;
+            composition.resize(width, height)?;
             let brush = context.CreateSolidColorBrush(&color(0xffffff, 1.), None)?;
             let mut surface = Self {
                 device,
@@ -151,8 +148,7 @@ impl Surface {
                 used_vectors: HashSet::new(),
                 context,
                 swap,
-                _target: Some(target),
-                _visual: Some(visual),
+                composition: Some(composition),
                 hwnd,
                 bitmap: None,
                 brush,
@@ -165,6 +161,7 @@ impl Surface {
                 images: HashMap::new(),
                 used_images: HashSet::new(),
                 shell_mask: None,
+                glass_mask: None,
             };
             surface.bind_target()?;
             Ok(surface)
@@ -211,6 +208,10 @@ impl Surface {
             self.width = width;
             self.height = height;
             self.scale = scale;
+            self.composition
+                .as_ref()
+                .expect("bound composition")
+                .resize(width, height)?;
             self.bind_target()
         }
     }
@@ -219,10 +220,59 @@ impl Surface {
             self.context.SetTarget(None);
         }
         self.bitmap = None;
-        self._target = None;
-        self._visual = None;
+        self.composition = None;
         let next = Self::new(device, self.hwnd, self.width, self.height, self.scale)?;
         *self = next;
+        Ok(())
+    }
+    pub fn check_glass(&self) -> Result<()> {
+        self.composition
+            .as_ref()
+            .expect("bound composition")
+            .check_glass()
+    }
+    pub fn set_glass(&mut self, enabled: bool) -> Result<()> {
+        if self
+            .composition
+            .as_mut()
+            .expect("bound composition")
+            .set_glass(enabled)?
+        {
+            self.glass_mask = None;
+        }
+        Ok(())
+    }
+    fn sync_glass_clip(&mut self, shell: Shell, floating: bool) -> Result<()> {
+        let key = (shell, floating, self.scale);
+        if !self
+            .composition
+            .as_ref()
+            .expect("bound composition")
+            .glass_enabled()
+            || self.glass_mask == Some(key)
+        {
+            return Ok(());
+        }
+        if let Some(mask) = &self.shell_mask {
+            let geometry = unsafe {
+                self.device.factory.CreateTransformedGeometry(
+                    mask,
+                    &Matrix3x2 {
+                        M11: self.scale,
+                        M12: 0.,
+                        M21: 0.,
+                        M22: self.scale,
+                        M31: 0.,
+                        M32: 0.,
+                    },
+                )?
+            };
+            self.composition
+                .as_ref()
+                .expect("bound composition")
+                .clip(geometry.into())?;
+            self.glass_mask = Some(key);
+        }
         Ok(())
     }
     pub fn begin(&mut self, background: Option<u32>) {
@@ -255,13 +305,20 @@ impl Surface {
             Ok(())
         }
     }
-    pub fn shell(&mut self, s: Shell) -> Result<()> {
+    pub fn styled_shell(&mut self, s: Shell, floating: bool, opacity: f32) -> Result<()> {
         unsafe {
             let width = s.width.max(40.);
             let height = s.height.max(4.);
-            let ear = s.ear.min(height * 0.45).max(2.);
-            let radius = s.radius.min(width * 0.45).min(height - ear).max(2.);
+            let (ear, radius) = s.corners(floating);
             let x = (SURFACE_WIDTH - width) / 2.;
+            if floating {
+                let body = rounded(Rect::new(x, 0., width, height), radius);
+                let geometry = self.device.factory.CreateRoundedRectangleGeometry(&body)?;
+                self.tint(0, opacity);
+                self.context.FillGeometry(&geometry, &self.brush, None);
+                self.shell_mask = Some(geometry.cast()?);
+                return self.sync_glass_clip(s, floating);
+            }
             let path = self.device.factory.CreatePathGeometry()?;
             let sink = path.Open()?;
             sink.BeginFigure(point(x - ear, 0.), D2D1_FIGURE_BEGIN_FILLED);
@@ -296,10 +353,10 @@ impl Surface {
             ));
             sink.EndFigure(D2D1_FIGURE_END_CLOSED);
             sink.Close()?;
-            self.tint(0, 1.);
+            self.tint(0, opacity);
             self.context.FillGeometry(&path, &self.brush, None);
             self.shell_mask = Some(path.cast()?);
-            Ok(())
+            self.sync_glass_clip(s, floating)
         }
     }
     pub fn clip_shell(&self) -> Result<()> {

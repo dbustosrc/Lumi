@@ -133,6 +133,21 @@ pub struct TodoProgress {
 }
 
 impl TodoProgress {
+    pub fn for_day(tasks: &[TodoTask], today: NaiveDate) -> Self {
+        let mut progress = Self { done: 0, total: 0 };
+        for task in tasks {
+            let completed_today = task
+                .completed_at
+                .is_some_and(|at| at.with_timezone(&Local).date_naive() == today);
+            if completed_today || task.schedule.occurs_on(today) {
+                progress.total += 1;
+                progress.done +=
+                    usize::from(completed_today || (task.is_done && !task.schedule.daily));
+            }
+        }
+        progress
+    }
+
     pub fn of(tasks: &[TodoTask]) -> Self {
         Self {
             done: tasks.iter().filter(|task| task.is_done).count(),

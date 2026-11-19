@@ -7,7 +7,7 @@ mod protocol;
 mod sendspin_player;
 mod tracker;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -278,7 +278,7 @@ impl Session {
         loop {
             tokio::select! {
                 message = next_json(socket) => match message? {
-                    Some(message) => self.handle_message(socket, &message, events).await?,
+                    Some(message) => self.handle_message(&message, events),
                     None => return Ok(()),
                 },
                 Some(command) = commands.recv() => {
@@ -288,12 +288,7 @@ impl Session {
         }
     }
 
-    async fn handle_message(
-        &mut self,
-        socket: &mut Socket,
-        message: &Value,
-        events: &EventSender,
-    ) -> Result<(), SessionError> {
+    fn handle_message(&mut self, message: &Value, events: &EventSender) {
         if message.get("message_id").and_then(Value::as_str) == Some(QUEUES_REQUEST_ID) {
             let queues = message
                 .get("result")
@@ -301,23 +296,21 @@ impl Session {
                 .cloned()
                 .unwrap_or_default();
             queues.iter().for_each(|queue| self.on_queue(queue, events));
-            return self.maybe_transfer_to_local(socket).await;
+            return;
         }
         if let Some(code) = message.get("error_code") {
             tracing::warn!(event = "log.music.commandRejected", error_code = %code);
-            return Ok(());
+            return;
         }
         match message.get("event").and_then(Value::as_str) {
             Some("queue_added" | "queue_updated") => {
                 if let Some(queue) = message.get("data") {
                     self.on_queue(queue, events);
-                    self.maybe_transfer_to_local(socket).await?;
                 }
             }
             Some("queue_time_updated") => self.on_time(message, events),
             _ => {}
         }
-        Ok(())
     }
 
     fn on_queue(&mut self, value: &Value, events: &EventSender) {
@@ -334,45 +327,11 @@ impl Session {
         publish_snapshot(events, self.tracker.update_elapsed(queue_id, elapsed));
     }
 
-    async fn maybe_transfer_to_local(&mut self, socket: &mut Socket) -> Result<(), SessionError> {
-        if let Some((source, target)) = self.tracker.take_auto_transfer(Instant::now()) {
-            self.transfer_queue(socket, &source, &target, true).await?;
-        }
-        Ok(())
-    }
-
-    async fn transfer_queue(
-        &mut self,
-        socket: &mut Socket,
-        source_queue_id: &str,
-        target_queue_id: &str,
-        auto_play: bool,
-    ) -> Result<(), SessionError> {
-        self.next_id += 1;
-        let id = format!("lumi-transfer-{}", self.next_id);
-        let args = json!({
-            "source_queue_id": source_queue_id,
-            "target_queue_id": target_queue_id,
-            "auto_play": auto_play,
-        });
-        tracing::info!(
-            event = "log.music.queueTransferred",
-            source = %source_queue_id,
-            target = %target_queue_id
-        );
-        send_command(socket, &id, "player_queues/transfer", args).await
-    }
-
     async fn send_media_command(
         &mut self,
         socket: &mut Socket,
         command: MediaCommand,
     ) -> Result<(), SessionError> {
-        if matches!(command, MediaCommand::PlayPause)
-            && let Some((source, target)) = self.tracker.take_play_transfer(Instant::now())
-        {
-            return self.transfer_queue(socket, &source, &target, true).await;
-        }
         let Some(queue_id) = self.tracker.followed_queue_id().map(str::to_owned) else {
             tracing::warn!(event = "log.music.noActiveQueue");
             return Ok(());

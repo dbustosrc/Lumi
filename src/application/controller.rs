@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{Local, Timelike};
 
-use super::events::{AppEvent, EventReceiver, UserIntent};
+use super::events::{AppEvent, DropHover, EventReceiver, FileDropDestination, UserIntent};
 use super::media_session::MediaSession;
 use super::presenter::{NotchPresenter, ViewUpdate, VoiceState};
 use super::reminders::{ReminderNotice, Reminders, UtilityState};
@@ -16,22 +16,30 @@ use super::voice_capture::VoiceCapture;
 use crate::domain::device::PowerStatus;
 use crate::domain::hover::{HOVER_LEAVE_GRACE, HoverState};
 use crate::domain::notch::{NotchContext, NotchPage, NotchView, Peek, resolve_view};
-use crate::domain::ports::PortError;
+use crate::domain::{ports::PortError, widgets::FocusDay};
 
 const PEEK_VISIBLE_FOR: Duration = Duration::from_millis(3500);
 const HUD_VISIBLE_FOR: Duration = Duration::from_millis(1500);
 const POST_DROP_VISIBLE_FOR: Duration = Duration::from_millis(1600);
+const QUICK_SHARE_VISIBLE_FOR: Duration = Duration::from_secs(8);
 const DOZE_AFTER_REST: Duration = Duration::from_secs(120);
 const LYRICS_TICK: Duration = Duration::from_millis(200);
 const PROGRESS_TICK: Duration = Duration::from_millis(500);
+
+pub trait FocusDayStore: Send + Sync {
+    fn save(&self, day: FocusDay) -> Result<(), PortError>;
+}
 
 /// Use cases the controller coordinates.
 pub struct ControllerServices {
     pub media: MediaSession,
     pub shelf: ShelfService,
+    pub quick_share: tokio::sync::mpsc::UnboundedSender<super::quick_share::Command>,
     pub todo: TodoService,
     pub voice: VoiceCapture,
     pub water: super::water_service::WaterService,
+    pub focus_store: Box<dyn FocusDayStore>,
+    pub focus_day: FocusDay,
 }
 
 /// Central use case of the notch: reacts to events, keeps the view state and
@@ -56,6 +64,7 @@ pub struct NotchController {
     open_on_click: bool,
     reminders: Reminders,
     utility_state: Option<UtilityState>,
+    published_focus_day: Option<FocusDay>,
     water_state: Option<crate::domain::water::WaterState>,
     voice_state: Option<VoiceState>,
     desktop: DesktopSettings,
@@ -92,6 +101,7 @@ impl NotchController {
             open_on_click: false,
             reminders: Reminders::new(settings.reminders.clone()),
             utility_state: None,
+            published_focus_day: None,
             water_state: None,
             voice_state: None,
             desktop: settings.desktop.clone(),
@@ -134,6 +144,9 @@ impl NotchController {
 
     fn handle_event(&mut self, event: AppEvent) {
         match event {
+            AppEvent::QuickShare(command) => {
+                let _ = self.services.quick_share.send(command);
+            }
             AppEvent::TaskApi { command, reply } => {
                 if !reply.is_closed() {
                     let mutation = command.is_mutation();
@@ -197,7 +210,7 @@ impl NotchController {
             }
             AppEvent::MascotActivity => self.keep_mascot_awake(Instant::now()),
             AppEvent::ShelfTextDropped(text) => {
-                self.on_file_drag_hover(false);
+                self.on_file_drag_hover(None);
                 self.on_drop_received();
                 let result = self.services.shelf.add_text(text);
                 self.after_shelf_mutation(result);
@@ -270,8 +283,10 @@ impl NotchController {
 
     fn handle_shelf_event(&mut self, event: AppEvent) {
         match event {
-            AppEvent::FileDragHover(is_hover) => self.on_file_drag_hover(is_hover),
-            AppEvent::FilesDropped(paths) => self.on_files_dropped(&paths),
+            AppEvent::FileDragHover(hover) => self.on_file_drag_hover(hover),
+            AppEvent::FilesDropped { paths, destination } => {
+                self.on_files_dropped(paths, destination)
+            }
             AppEvent::FilesPicked(paths) => self.on_files_picked(&paths),
             AppEvent::ShelfThumbnailLoaded { id, thumbnail } => {
                 if let Some(thumbnail) = thumbnail
@@ -296,6 +311,19 @@ impl NotchController {
 
     fn handle_intent(&mut self, intent: UserIntent) {
         match intent {
+            UserIntent::RevealQuickShare => {
+                if !self.is_text_editing
+                    && !self.is_fullscreen
+                    && !self.is_outbound_dragging
+                    && !self.context.is_file_drag_over
+                {
+                    self.context.page = NotchPage::QuickShare;
+                    self.peek_until = None;
+                    self.context.peek = None;
+                    self.hover
+                        .reveal_for(Instant::now(), QUICK_SHARE_VISIBLE_FOR);
+                }
+            }
             UserIntent::CalendarMove(offset) => {
                 self.calendar_offset = self.calendar_offset.saturating_add(offset);
                 self.publish_calendar();
@@ -353,8 +381,12 @@ impl NotchController {
             UserIntent::Hover(is_hovered) => self.on_hover(is_hovered),
             UserIntent::LockInteraction(is_locked) => self.on_lock_interaction(is_locked),
             UserIntent::ShowPage(page) => self.show_page(page),
-            UserIntent::NextPage => self.show_page(self.context.page.next()),
-            UserIntent::PreviousPage => self.show_page(self.context.page.previous()),
+            UserIntent::NextPage => {
+                self.show_page(self.context.page.step(1, self.desktop.widgets.enabled))
+            }
+            UserIntent::PreviousPage => {
+                self.show_page(self.context.page.step(-1, self.desktop.widgets.enabled))
+            }
             UserIntent::ToggleLyrics => self.toggle_lyrics(),
             UserIntent::Media(command) => self.services.media.execute(command),
             UserIntent::SeekToFraction(fraction) => self.services.media.seek_to_fraction(fraction),
@@ -392,12 +424,19 @@ impl NotchController {
         }
     }
 
-    fn on_file_drag_hover(&mut self, is_hover: bool) {
+    fn on_file_drag_hover(&mut self, hover: Option<DropHover>) {
         self.mark_activity();
-        if is_hover {
-            self.context.page = NotchPage::Shelf;
+        let is_hover = hover.is_some();
+        self.context.is_choosing_drop_destination = matches!(hover, Some(DropHover::Files(_)));
+        if let Some(hover) = hover {
             self.peek_until = None;
             self.context.peek = None;
+            match hover {
+                DropHover::Text => self.context.page = NotchPage::Shelf,
+                DropHover::Files(destination) => self
+                    .presenter
+                    .apply(ViewUpdate::FileDropDestination(destination)),
+            }
         }
         if self.context.is_file_drag_over != is_hover {
             self.context.is_file_drag_over = is_hover;
@@ -405,11 +444,24 @@ impl NotchController {
         }
     }
 
-    fn on_files_dropped(&mut self, paths: &[PathBuf]) {
-        self.on_file_drag_hover(false);
-        self.on_drop_received();
-        let result = self.services.shelf.add_paths(paths);
-        self.after_shelf_mutation(result);
+    fn on_files_dropped(&mut self, paths: Vec<PathBuf>, destination: FileDropDestination) {
+        self.on_file_drag_hover(None);
+        match destination {
+            FileDropDestination::Shelf => {
+                self.reveal_shelf_briefly();
+                let result = self.services.shelf.add_paths(&paths);
+                self.after_shelf_mutation(result);
+            }
+            FileDropDestination::QuickShare => {
+                self.context.page = NotchPage::QuickShare;
+                self.hover.reveal_for(Instant::now(), POST_DROP_VISIBLE_FOR);
+                self.presenter.apply(ViewUpdate::QuickShareStaged);
+                let _ = self
+                    .services
+                    .quick_share
+                    .send(super::quick_share::Command::Stage(paths));
+            }
+        }
     }
 
     fn on_files_picked(&mut self, paths: &[PathBuf]) {
@@ -605,6 +657,9 @@ impl NotchController {
     }
 
     fn show_page(&mut self, page: NotchPage) {
+        if page == NotchPage::Widgets && !self.desktop.widgets.enabled {
+            return;
+        }
         self.context.page = page;
     }
 
@@ -649,6 +704,9 @@ impl NotchController {
             self.calendar_offset = 0;
         }
         self.desktop = settings.desktop.clone();
+        if !self.desktop.widgets.enabled && self.context.page == NotchPage::Widgets {
+            self.context.page = NotchPage::Music;
+        }
         self.sounds = settings.reminders.sounds;
         self.reminders.configure(&settings.reminders);
         self.services.water.configure(&settings.water, Local::now());
@@ -700,7 +758,8 @@ impl NotchController {
             self.water_state = Some(water.clone());
             self.presenter.apply(ViewUpdate::Water(water));
         }
-        if let Some(id) = self.reminders.state(now).task_id
+        let before = self.reminders.state(now);
+        if let Some(id) = before.task_id
             && self
                 .services
                 .todo
@@ -710,10 +769,28 @@ impl NotchController {
         {
             self.reminders.cancel_task(id);
         }
-        for notice in self.reminders.tick(now) {
+        let notices = self.reminders.tick(now);
+        let state = self.reminders.state(now);
+        let today = wall.date_naive();
+        if before.phase == super::reminders::FocusPhase::Focus && state.phase != before.phase {
+            let day = self
+                .services
+                .focus_day
+                .complete(today, before.focus_total_seconds / 60);
+            self.services.focus_day = day;
+            if let Err(error) = self.services.focus_store.save(day) {
+                tracing::warn!(%error, "Could not save today's focus totals");
+            }
+        }
+        let day = self.services.focus_day.for_date(today);
+        if self.published_focus_day != Some(day) {
+            self.published_focus_day = Some(day);
+            self.presenter
+                .apply(ViewUpdate::FocusToday(day.minutes, day.sessions));
+        }
+        for notice in notices {
             self.show_reminder(notice);
         }
-        let state = self.reminders.state(now);
         if self.utility_state.as_ref() != Some(&state) {
             self.utility_state = Some(state.clone());
             self.presenter.apply(ViewUpdate::Utility(state));

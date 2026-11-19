@@ -6,7 +6,7 @@ use crate::adapters::native::model::{
 };
 use crate::adapters::native::scene::{Action, Field, Paint, PathSegment, Preference, Scene};
 use crate::adapters::native::{settings, views};
-use crate::application::presenter::{ShelfEntry, VoiceState};
+use crate::application::presenter::{ShelfEntry, ViewUpdate, VoiceState};
 use crate::application::reminders::{FocusPhase, UtilityState};
 use crate::application::settings::{AppSettings, LanguagePreference};
 use crate::domain::calendar::calendar_grid;
@@ -16,6 +16,7 @@ use crate::domain::notch::NotchView;
 use crate::domain::shelf::{ShelfContent, ShelfItem, ShelfItemKind};
 use crate::domain::todo::{TaskColor, TaskSchedule, TodoProgress, TodoTask};
 use crate::domain::water::WaterState;
+use crate::domain::widgets::{StatusRing, Widget};
 use chrono::{Local, NaiveTime, TimeZone, Utc};
 use image::RgbaImage;
 use std::error::Error;
@@ -101,7 +102,6 @@ fn native_scenes_render_review_captures_without_showing_a_window()
     let mut model = fixture_model();
     let now = model.view_changed + Duration::from_secs(1);
     model.water_change = now - Duration::from_secs(1);
-    model.shelf_change = now - Duration::from_secs(1);
     model.list_changed = now - Duration::from_secs(1);
     let output = std::env::current_dir()?.join("target/native-render");
     std::fs::create_dir_all(output.join("notch"))?;
@@ -388,9 +388,10 @@ fn native_scenes_render_review_captures_without_showing_a_window()
     model.nav = false;
     model.nav_from = 0.;
     model.nav_changed = now - Duration::from_secs(1);
-    model.previous_shelf = model.shelf.clone();
-    model.shelf.clear();
-    model.shelf_change = now - Duration::from_millis(140);
+    model.apply(
+        ViewUpdate::ShelfItems(Vec::new()),
+        now - Duration::from_millis(140),
+    );
     render_notch(
         &mut surface,
         &model,
@@ -570,6 +571,84 @@ fn native_scenes_render_review_captures_without_showing_a_window()
             model.selected_date = "2026-11-03".into();
             model.settings.desktop.calendar_week_view = false;
         }
+    }
+
+    model.settings.desktop.appearance.floating = true;
+    model.settings.desktop.appearance.glass = true;
+    model.settings.desktop.appearance.tint_percent = 65;
+    render_settings(
+        &mut surface,
+        &model,
+        2,
+        now,
+        1.0,
+        output.join("settings").join("appearance-en-100.png"),
+    )?;
+
+    model.settings.desktop.status_ring = StatusRing::Todo;
+    render_settings(
+        &mut surface,
+        &model,
+        12,
+        now,
+        1.0,
+        output.join("settings").join("status-ring-en-100.png"),
+    )?;
+
+    model.settings.desktop.appearance.floating = false;
+    model.view = NotchView::Music;
+    model.nav = false;
+    render_notch(
+        &mut surface,
+        &model,
+        NotchView::Music,
+        now,
+        1.0,
+        output.join("notch").join("music-classic-shell-100.png"),
+    )?;
+    model.settings.desktop.appearance.floating = true;
+    render_notch(
+        &mut surface,
+        &model,
+        NotchView::Music,
+        now,
+        1.0,
+        output.join("notch").join("music-floating-shell-100.png"),
+    )?;
+
+    model.settings.desktop.widgets.enabled = true;
+    model.settings.desktop.widgets.left = Widget::WorldClock;
+    model.settings.desktop.widgets.right = Widget::Countdown;
+    render_settings(
+        &mut surface,
+        &model,
+        13,
+        now,
+        1.0,
+        output.join("settings").join("widgets-en-100.png"),
+    )?;
+
+    model.view = NotchView::Widgets;
+    model.nav = false;
+    for (widget, name) in Widget::ALL.into_iter().zip([
+        "week",
+        "water",
+        "focus",
+        "world-clock",
+        "battery",
+        "moon",
+        "countdown",
+    ]) {
+        model.settings.desktop.widgets.left = widget;
+        model.settings.desktop.widgets.right = widget;
+        render_notch(
+            &mut surface,
+            &model,
+            NotchView::Widgets,
+            now,
+            1.0,
+            output.join("notch").join(format!("widgets-{name}-both-100.png")),
+        )?;
     }
 
     crate::i18n::select_language(LanguagePreference::Spanish, None);
@@ -894,7 +973,11 @@ fn render_notch(
     assert_scene_fits(&scene, SURFACE_WIDTH, SURFACE_HEIGHT);
 
     surface.begin(None);
-    surface.shell(Shell::for_view(view, model.nav))?;
+    surface.styled_shell(
+        Shell::for_view(view, model.nav),
+        model.settings.desktop.appearance.floating,
+        1.,
+    )?;
     surface.clip_shell()?;
     surface.paint(&scene.paint, 1., (0., 0.))?;
     surface.unclip_shell();

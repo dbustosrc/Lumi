@@ -1,8 +1,9 @@
 //! Scene construction shares every control rectangle with native input and UIA.
 use super::model::*;
 use super::scene::*;
-use crate::application::events::UserIntent;
+use crate::application::events::{FileDropDestination, UserIntent};
 use crate::application::presenter::{LyricsAvailability, VoiceState};
+use crate::application::quick_share::{Command, Tray};
 use crate::application::reminders::FocusPhase;
 use crate::domain::media::MediaCommand;
 use crate::domain::notch::{NotchPage, NotchView};
@@ -27,7 +28,14 @@ const RED: u32 = 0xff4b55;
 fn full(key: &str) -> String {
     crate::i18n::translate(key)
 }
-fn icon_button(s: &mut Scene, r: Rect, glyph: &str, action: Action, label: &str, color: u32) {
+pub(super) fn icon_button(
+    s: &mut Scene,
+    r: Rect,
+    glyph: &str,
+    action: Action,
+    label: &str,
+    color: u32,
+) {
     s.round(r, r.h / 2., color);
     let size = match glyph {
         "\u{e76b}" | "\u{e76c}" => 9.,
@@ -86,7 +94,7 @@ pub fn notch_scene(m: &UiModel, view: NotchView, now: Instant) -> Scene {
             if super::mascot::should_render_in_closed(m, now) {
                 super::mascot::render_mascot(&mut s, m, b, now);
             } else {
-                battery(&mut s, Rect::new(b.x + 12.5, 7.5, 14., 14.), m);
+                super::widgets::status_ring(&mut s, Rect::new(b.x + 12.5, 7.5, 14., 14.), m);
                 s.text(
                     Rect::new(b.x + 34., 0., 82., 30.),
                     m.clock.format("%H:%M").to_string(),
@@ -108,6 +116,7 @@ pub fn notch_scene(m: &UiModel, view: NotchView, now: Instant) -> Scene {
             }
         }
         NotchView::Hud => hud(&mut s, m, b, now),
+        NotchView::FileDrop => draw_file_drop(&mut s, b, m.file_drop_destination),
         NotchView::ChargingPeek | NotchView::HeadphonesPeek => {
             device_page(&mut s, m, b, view, true, now)
         }
@@ -119,8 +128,10 @@ pub fn notch_scene(m: &UiModel, view: NotchView, now: Instant) -> Scene {
                 }
                 NotchView::Pomodoro => focus(&mut s, m, b),
                 NotchView::Water => water(&mut s, m, b, now),
+                NotchView::Widgets => super::widgets::page(&mut s, m, b),
                 NotchView::Todo => todo(&mut s, m, b),
                 NotchView::Shelf => shelf(&mut s, m, b, now),
+                NotchView::QuickShare => super::quick_share::draw(&mut s, m, b, now),
                 NotchView::Charging | NotchView::Headphones => {
                     device_page(&mut s, m, b, view, false, now)
                 }
@@ -175,18 +186,6 @@ pub fn notch_scene(m: &UiModel, view: NotchView, now: Instant) -> Scene {
     );
     s
 }
-fn battery(s: &mut Scene, r: Rect, m: &UiModel) {
-    s.ring(
-        r,
-        f32::from(m.power.percent) / 100.,
-        if m.power.is_plugged_in {
-            0x5eff9c
-        } else {
-            0x33e07a
-        },
-        2.3,
-    );
-}
 fn timer_badge(s: &mut Scene, r: Rect, m: &UiModel) {
     s.progress_ring(r, m.remaining(), 0xff5c64, false);
     s.icon(r.inset(r.w * 0.24), TIMER, RED);
@@ -208,9 +207,10 @@ fn equalizer(s: &mut Scene, r: Rect, playing: bool, elapsed: f32) {
 
 fn header(s: &mut Scene, m: &UiModel, b: Rect) {
     let x = b.x + ((b.w - 144.) / 2.).max(120.);
-    battery(s, Rect::new(x, 10., 14., 14.), m);
+    let ring = super::widgets::status_ring(s, Rect::new(x, 10., 14., 14.), m);
+    let x = x + if ring { 21. } else { 7. };
     s.text_run(
-        Rect::new(x + 21., 9., b.w - (x - b.x) - 21., 18.),
+        Rect::new(x, 9., b.x + b.w - x, 18.),
         vec![
             TextSpan::new(
                 crate::i18n::format_header_date(m.clock),
@@ -235,18 +235,23 @@ fn header(s: &mut Scene, m: &UiModel, b: Rect) {
     }
 }
 fn navigation(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
-    let selected = match m.view {
-        NotchView::Music | NotchView::Lyrics => 0,
-        NotchView::Pomodoro => 1,
-        NotchView::Water => 2,
-        NotchView::Shelf => 3,
-        NotchView::Todo => 4,
-        NotchView::Headphones => 5,
-        _ => 6,
-    };
-    let glyphs = [MUSIC, TIMER, DROP, SHELF, TODO, "\u{e7f6}", "\u{e850}"];
+    let selected = page_index(m.view);
+    let pages = NotchPage::available(m.settings.desktop.widgets.enabled);
+    let icons = [
+        (MUSIC, "nav-music", 0xff3d68),
+        (TIMER, "nav-pomodoro", 0xe6e6ea),
+        (DROP, "nav-water", 0x36baff),
+        (SHELF, "nav-shelf", 0xffb026),
+        ("quick-share-radar", "nav-quick-share", 0x4385f5),
+        (TODO, "nav-todo", 0x38d36f),
+        ("\u{e7f6}", "headset", 0x66aaff),
+        ("\u{e850}", "battery", 0x3be666),
+        (super::widgets::WIDGETS_ICON, "nav-widgets", 0x63b3ff),
+    ];
     let amount = m.nav_amount(now);
-    let width = 82. + 158. * amount;
+    let slots = pages.len() + 1;
+    let width = COLLAPSED_NAV_WIDTH
+        + (expanded_nav_width(m.settings.desktop.widgets.enabled) - COLLAPSED_NAV_WIDTH) * amount;
     let x = b.x + (b.w - width) / 2.;
     let y = 132. + 6. * amount;
     let height = 6. + 18. * amount;
@@ -254,45 +259,35 @@ fn navigation(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
         s.paint.push(Paint::Opacity(amount));
         s.round(Rect::new(x, y, width, height), height / 2., 0x171719);
         s.clip(Rect::new(x, y, width, height));
-        for i in 0..8 {
-            let slot = (width - 16.) / 8.;
+        let slot = (width - 16.) / slots as f32;
+        for (i, page) in pages
+            .iter()
+            .map(Some)
+            .chain(std::iter::once(None))
+            .enumerate()
+        {
+            let (glyph, label, color) = page
+                .map_or(("page-settings", "nav-general", 0x99999e), |p| {
+                    icons[p.index()]
+                });
             let cx = x + 8. + (i as f32 + 0.5) * slot;
-            let tint = if i == selected {
-                [
-                    0xff3d68, 0xe6e6ea, 0x36baff, 0xffb026, 0x38d36f, 0x66aaff, 0x3be666, 0x99999e,
-                ][i]
-            } else {
-                0x99999e
-            };
-            if i == 1 && m.focus_running() {
+            let tint = if selected == Some(i) { color } else { 0x99999e };
+            if page == Some(&NotchPage::Pomodoro) && m.focus_running() {
                 timer_badge(s, Rect::new(cx - 9., y + (height - 18.) / 2., 18., 18.), m);
             } else {
                 s.icon(
                     Rect::new(cx - 7., y + (height - 14.) / 2., 14., 14.),
-                    if i == 7 { "page-settings" } else { glyphs[i] },
+                    glyph,
                     tint,
                 );
             }
             if m.nav {
                 s.hit(
                     Rect::new(x + 8. + i as f32 * slot, y, slot, height),
-                    if i == 7 {
-                        Action::Settings
-                    } else {
-                        Action::Intent(UserIntent::ShowPage(
-                            NotchPage::from_index(i).expect("page index"),
-                        ))
-                    },
-                    tr([
-                        "nav-music",
-                        "nav-pomodoro",
-                        "nav-water",
-                        "nav-shelf",
-                        "nav-todo",
-                        "headset",
-                        "battery",
-                        "nav-general",
-                    ][i]),
+                    page.map_or(Action::Settings, |p| {
+                        Action::Intent(UserIntent::ShowPage(*p))
+                    }),
+                    tr(label),
                 );
             }
         }
@@ -301,29 +296,20 @@ fn navigation(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
     }
     if amount < 0.99 {
         s.paint.push(Paint::Opacity(1. - amount));
-        let mut dx = b.x + b.w / 2. - 31.;
-        for i in 0..7 {
-            let w = if i == selected { 14. } else { 4. };
+        let total = pages.len() as f32 * 8. + if selected.is_some() { 6. } else { -4. };
+        let mut dx = b.x + (b.w - total) / 2.;
+        for (i, &page) in pages.iter().enumerate() {
+            let w = if selected == Some(i) { 14. } else { 4. };
             s.round(
                 Rect::new(dx, 133., w, 4.),
                 2.,
-                if i == selected { WHITE } else { 0x68686c },
+                if selected == Some(i) { WHITE } else { 0x68686c },
             );
             if !m.nav {
                 s.hit(
                     Rect::new(dx - 2., 127., w + 4., 16.),
-                    Action::Intent(UserIntent::ShowPage(
-                        NotchPage::from_index(i).expect("page index"),
-                    )),
-                    tr([
-                        "nav-music",
-                        "nav-pomodoro",
-                        "nav-water",
-                        "nav-shelf",
-                        "nav-todo",
-                        "headset",
-                        "battery",
-                    ][i]),
+                    Action::Intent(UserIntent::ShowPage(page)),
+                    tr(icons[page.index()].1),
                 );
             }
             dx += w + 4.;
@@ -1642,6 +1628,250 @@ fn calendar(s: &mut Scene, m: &UiModel, b: Rect) {
         task_rows(s, m, list, true);
     }
 }
+
+pub(super) const SHELF_CARD_STEP: f32 = 68.;
+
+#[derive(Clone, Copy)]
+pub(super) enum ShelfUse {
+    Shelf,
+    QuickShare(Tray),
+}
+
+pub(super) struct ShelfLayout<'a> {
+    pub scroll: f32,
+    pub removal: Option<ShelfRemovalFrame<'a>>,
+    pub use_for: ShelfUse,
+}
+
+pub(super) fn shelf_extent(count: usize) -> f32 {
+    (count as f32 * SHELF_CARD_STEP - 4.).max(0.)
+}
+
+pub(super) fn shelf_cards(
+    s: &mut Scene,
+    m: &UiModel,
+    r: Rect,
+    entries: &[crate::application::presenter::ShelfEntry],
+    layout: ShelfLayout<'_>,
+) -> f32 {
+    let (removed, progress) = layout
+        .removal
+        .map_or((&[][..], 1.), |frame| (frame.entries, frame.progress));
+    let previous_scroll = layout.scroll.clamp(
+        0.,
+        (shelf_extent(entries.len() + removed.len()) - r.w).max(0.),
+    );
+    let new_scroll = layout
+        .scroll
+        .clamp(0., (shelf_extent(entries.len()) - r.w).max(0.));
+    let scroll = if entries.is_empty() {
+        previous_scroll
+    } else {
+        previous_scroll + (new_scroll - previous_scroll) * progress
+    };
+    let card_rect = |index: f32, dy: f32| {
+        Rect::new(
+            r.x + index * SHELF_CARD_STEP - scroll,
+            r.y + 4. + dy,
+            64.,
+            74.,
+        )
+    };
+    s.clip(r);
+    if !removed.is_empty() {
+        s.paint.push(Paint::Opacity(1. - progress));
+        for (index, entry) in removed {
+            shelf_card(
+                s,
+                m,
+                r,
+                card_rect(*index as f32, progress * progress * 90.),
+                entry,
+                None,
+            );
+        }
+        s.paint.push(Paint::Opacity(1.));
+    }
+    let mut old_index = 0;
+    let mut gaps = removed.iter().peekable();
+    for (i, entry) in entries.iter().enumerate() {
+        while gaps.peek().is_some_and(|(index, _)| *index == old_index) {
+            gaps.next();
+            old_index += 1;
+        }
+        let position = old_index as f32 + (i as f32 - old_index as f32) * progress;
+        shelf_card(
+            s,
+            m,
+            r,
+            card_rect(position, 0.),
+            entry,
+            Some(layout.use_for),
+        );
+        old_index += 1;
+    }
+    s.unclip();
+    scroll
+}
+
+fn shelf_card(
+    s: &mut Scene,
+    m: &UiModel,
+    viewport: Rect,
+    card: Rect,
+    entry: &crate::application::presenter::ShelfEntry,
+    use_for: Option<ShelfUse>,
+) {
+    let clipped = card.intersect(viewport);
+    if clipped.w <= 0. || clipped.h <= 0. {
+        return;
+    }
+    let hovered = use_for.is_some() && clipped.contains(m.mouse.0, m.mouse.1);
+    if hovered {
+        s.alpha_round(card, 10., WHITE, 0.08);
+    }
+    let tile = Rect::new(card.x + 12., card.y + 4., 40., 40.);
+    s.alpha_round(tile, 9., WHITE, 0.05);
+    if let Some(image) = &entry.thumbnail {
+        s.paint.push(Paint::RoundedBitmap(
+            tile,
+            image.width,
+            image.height,
+            image.rgba.clone(),
+            9.,
+        ));
+    } else if let Some(text) = entry.item.text() {
+        s.paint.push(Paint::Paragraph(
+            Rect::new(tile.x + 4., tile.y + 4., 32., 32.),
+            text.to_owned(),
+            8.,
+            WHITE,
+        ));
+    } else if entry.item.is_directory {
+        s.icon(
+            Rect::new(tile.x + 2., tile.y + 4., 36., 32.),
+            "folder",
+            0xffca43,
+        );
+    } else {
+        let color = match entry.item.kind {
+            crate::domain::shelf::ShelfItemKind::Audio => 0xec4899,
+            crate::domain::shelf::ShelfItemKind::Video => 0x8b5cf6,
+            crate::domain::shelf::ShelfItemKind::Archive => 0xf59e0b,
+            crate::domain::shelf::ShelfItemKind::Code => 0x10b981,
+            _ => 0x2d5bff,
+        };
+        let badge = Rect::new(tile.x + 3., tile.y + 1., 34., 38.);
+        s.alpha_round(badge, 7., WHITE, 0.08);
+        s.alpha_border(badge, 7., WHITE, 1., 0.16);
+        s.round(Rect::new(badge.x + 24., badge.y, 10., 10.), 2., color);
+        s.round(Rect::new(badge.x + 3., badge.y + 19., 28., 14.), 4., color);
+        s.text(
+            Rect::new(badge.x + 3., badge.y + 19., 28., 14.),
+            &entry.badge,
+            8.5,
+            WHITE,
+            700u16,
+            true,
+        );
+    }
+    s.text(
+        Rect::new(card.x + 2., card.y + 46., 60., 14.),
+        &entry.item.display_name,
+        10.,
+        WHITE,
+        true,
+        true,
+    );
+    s.text(
+        Rect::new(card.x + 2., card.y + 59., 60., 12.),
+        &entry.size_label,
+        8.8,
+        DIM,
+        500u16,
+        true,
+    );
+    if let Some(use_for) = use_for {
+        let id = entry.item.id;
+        let (open, remove) = match use_for {
+            ShelfUse::Shelf => (
+                Some(Action::DragShelf(id)),
+                Some(Action::Intent(UserIntent::RemoveShelfItem(id))),
+            ),
+            ShelfUse::QuickShare(tray) => (
+                (tray == Tray::Received).then_some(Action::DragSharedFile(id)),
+                (tray == Tray::Received || !m.quick_share.sending)
+                    .then_some(Action::Share(Command::Remove(tray, id))),
+            ),
+        };
+        if let Some(open) = open {
+            s.hit(card, open, &entry.item.display_name);
+        }
+        if hovered && let Some(remove) = remove {
+            icon_button(
+                s,
+                Rect::new(card.x + 47., card.y + 4., 16., 16.),
+                "\u{e711}",
+                remove,
+                &full("quickShare.remove"),
+                0x000000,
+            );
+        }
+    }
+}
+
+pub(super) fn file_drop_zones(body: Rect) -> [(FileDropDestination, Rect); 2] {
+    let inner = body.inset(42.);
+    let gap = 10.;
+    let width = (inner.w - gap) / 2.;
+    [
+        (
+            FileDropDestination::Shelf,
+            Rect::new(inner.x, 34., width, 88.),
+        ),
+        (
+            FileDropDestination::QuickShare,
+            Rect::new(inner.x + width + gap, 34., width, 88.),
+        ),
+    ]
+}
+
+fn draw_file_drop(scene: &mut Scene, body: Rect, active: Option<FileDropDestination>) {
+    scene.text(
+        Rect::new(body.x, 8., body.w, 21.),
+        full("notch.shelf.chooseDestination"),
+        13.,
+        WHITE,
+        true,
+        true,
+    );
+    for (destination, area) in file_drop_zones(body) {
+        let selected = Some(destination) == active;
+        let color = if selected { BLUE } else { WHITE };
+        scene.alpha_round(area, 14., color, if selected { 0.25 } else { 0.12 });
+        scene.alpha_border(area, 14., color, 1., if selected { 0.95 } else { 0.23 });
+        let icon = Rect::new(area.x + (area.w - 24.) / 2., area.y + 19., 24., 24.);
+        let label = match destination {
+            FileDropDestination::Shelf => {
+                scene.icon(icon, SHELF, color);
+                tr("nav-shelf")
+            }
+            FileDropDestination::QuickShare => {
+                super::quick_share::draw_icon(scene, icon);
+                "Quick Share".to_owned()
+            }
+        };
+        scene.text(
+            Rect::new(area.x, area.y + 48., area.w, 20.),
+            label,
+            13.,
+            WHITE,
+            true,
+            true,
+        );
+    }
+}
+
 fn shelf(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
     title(s, b, &tr("nav-shelf"));
     if !m.shelf.is_empty() {
@@ -1688,11 +1918,8 @@ fn shelf(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
         );
         return;
     }
-    let clearing = m.shelf.is_empty()
-        && !m.previous_shelf.is_empty()
-        && now.duration_since(m.shelf_change).as_secs_f32() < 0.3;
-    let t = (now.duration_since(m.shelf_change).as_secs_f32() / 0.28).clamp(0., 1.);
-    if m.shelf.is_empty() && !clearing || m.shelf_drag {
+    let removal = m.shelf_removal.frame(now);
+    if m.shelf.is_empty() && removal.is_none() || m.shelf_drag {
         s.round(r, 16., if m.shelf_drag { 0x101420 } else { 0x090909 });
         s.icon(
             r,
@@ -1737,110 +1964,17 @@ fn shelf(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
             full("notch.shelf.addButton"),
         );
     }
-    let entries = if clearing {
-        &m.previous_shelf
-    } else {
-        &m.shelf
-    };
-    s.clip(r);
-    if clearing {
-        s.paint.push(Paint::Opacity(1. - t));
-    }
-    for (i, entry) in entries.iter().enumerate() {
-        let card = Rect::new(
-            r.x + i as f32 * 68. - m.shelf_scroll,
-            r.y + 4. + if clearing { t * t * 90. } else { 0. },
-            64.,
-            74.,
-        );
-        if card.x + card.w < r.x || card.x > r.x + r.w {
-            continue;
-        }
-        let hovered = card.contains(m.mouse.0, m.mouse.1);
-        if hovered {
-            s.alpha_round(card, 10., WHITE, 0.08);
-        }
-        let tile = Rect::new(card.x + 12., card.y + 4., 40., 40.);
-        s.alpha_round(tile, 9., WHITE, 0.05);
-        if let Some(image) = &entry.thumbnail {
-            s.paint.push(Paint::RoundedBitmap(
-                tile,
-                image.width,
-                image.height,
-                image.rgba.clone(),
-                9.,
-            ));
-        } else if let Some(text) = entry.item.text() {
-            s.paint.push(Paint::Paragraph(
-                Rect::new(tile.x + 4., tile.y + 4., 32., 32.),
-                text.to_owned(),
-                8.,
-                WHITE,
-            ));
-        } else if entry.item.is_directory {
-            s.icon(
-                Rect::new(tile.x + 2., tile.y + 4., 36., 32.),
-                "folder",
-                0xffca43,
-            );
-        } else {
-            let color = match entry.item.kind {
-                crate::domain::shelf::ShelfItemKind::Audio => 0xec4899,
-                crate::domain::shelf::ShelfItemKind::Video => 0x8b5cf6,
-                crate::domain::shelf::ShelfItemKind::Archive => 0xf59e0b,
-                crate::domain::shelf::ShelfItemKind::Code => 0x10b981,
-                _ => 0x2d5bff,
-            };
-            let badge = Rect::new(tile.x + 3., tile.y + 1., 34., 38.);
-            s.alpha_round(badge, 7., WHITE, 0.08);
-            s.alpha_border(badge, 7., WHITE, 1., 0.16);
-            s.round(Rect::new(badge.x + 24., badge.y, 10., 10.), 2., color);
-            s.round(Rect::new(badge.x + 3., badge.y + 19., 28., 14.), 4., color);
-            s.text(
-                Rect::new(badge.x + 3., badge.y + 19., 28., 14.),
-                &entry.badge,
-                8.5,
-                WHITE,
-                700u16,
-                true,
-            );
-        }
-        s.text(
-            Rect::new(card.x + 2., card.y + 46., 60., 14.),
-            &entry.item.display_name,
-            10.,
-            WHITE,
-            true,
-            true,
-        );
-        s.text(
-            Rect::new(card.x + 2., card.y + 59., 60., 12.),
-            &entry.size_label,
-            8.8,
-            DIM,
-            500u16,
-            true,
-        );
-        if !clearing {
-            s.hit(
-                card,
-                Action::DragShelf(entry.item.id),
-                &entry.item.display_name,
-            );
-            if hovered {
-                icon_button(
-                    s,
-                    Rect::new(card.x + 47., card.y + 1., 16., 16.),
-                    "\u{e711}",
-                    Action::Intent(UserIntent::RemoveShelfItem(entry.item.id)),
-                    "Remove",
-                    0x000000,
-                );
-            }
-        }
-    }
-    s.paint.push(Paint::Opacity(1.));
-    s.unclip();
+    shelf_cards(
+        s,
+        m,
+        r,
+        &m.shelf,
+        ShelfLayout {
+            scroll: m.shelf_scroll,
+            removal,
+            use_for: ShelfUse::Shelf,
+        },
+    );
     if m.shelf_menu {
         let menu = Rect::new(b.x + 55., 30., 142., 91.);
         s.round(menu, 10., 0x25252a);

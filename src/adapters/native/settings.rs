@@ -64,8 +64,16 @@ pub enum NoticesPage {
     Component { index: usize, index_scroll: f32 },
 }
 
+use crate::domain::widgets::{CITIES, StatusRing, Widget};
+
+const ABOUT: usize = 10;
+const STATUS_RING: usize = 12;
+const WIDGETS: usize = 13;
+const QUICK_SHARE: usize = 14;
+
 pub struct SettingsUi {
     pub section: usize,
+    pub widget_right: bool,
     pub notices: Option<NoticesPage>,
     pub changed: Instant,
     pub scroll: f32,
@@ -87,6 +95,7 @@ impl SettingsUi {
     pub fn new(settings: &AppSettings, dark: bool) -> Self {
         let mut ui = Self {
             section: 0,
+            widget_right: false,
             notices: None,
             changed: Instant::now(),
             scroll: 0.,
@@ -117,8 +126,17 @@ impl SettingsUi {
             (Field::MaToken, s.music_assistant.token.clone()),
             (Field::MaQueue, s.music_assistant.queue_id.clone()),
             (Field::VoiceHost, s.wyoming.host.clone()),
+            (Field::QuickShareName, s.quick_share.device_name.clone()),
             (Field::VoicePort, s.wyoming.port.to_string()),
             (Field::VoiceLanguage, s.wyoming.language.clone()),
+            (
+                Field::CountdownDate,
+                s.desktop.widgets.countdown_date.clone(),
+            ),
+            (
+                Field::CountdownName,
+                s.desktop.widgets.countdown_name.clone(),
+            ),
         ])
     }
     pub fn has_unsaved_fields(&self, current: &AppSettings) -> bool {
@@ -143,11 +161,14 @@ impl SettingsUi {
         next.music_assistant.token = get(Field::MaToken)?.trim().into();
         next.music_assistant.queue_id = get(Field::MaQueue)?.trim().into();
         next.wyoming.host = get(Field::VoiceHost)?.trim().into();
+        next.quick_share.device_name = get(Field::QuickShareName)?.trim().into();
         next.wyoming.port = get(Field::VoicePort)?
             .trim()
             .parse()
             .map_err(|e| PortError::new("settings.status.invalidNumber", e))?;
         next.wyoming.language = get(Field::VoiceLanguage)?.trim().into();
+        next.desktop.widgets.countdown_date = get(Field::CountdownDate)?.trim().into();
+        next.desktop.widgets.countdown_name = get(Field::CountdownName)?.trim().into();
         next.validate()?;
         Ok(next)
     }
@@ -156,14 +177,20 @@ macro_rules! preference_fields {
     (bool {$($b:ident => $($bf:ident).+),* $(,)?} number {$($n:ident => $($nf:ident).+),* $(,)?})=>{
         impl Preference {
             pub fn is_boolean(self)->bool {matches!(self,$(Self::$b)|*)}
-            pub fn value(self,s:&AppSettings)->i32 {match self {$(Self::$b=>i32::from(s.$($bf).+),)*$(Self::$n=>i32::from(s.$($nf).+),)*Self::Language=>match s.language{LanguagePreference::System=>0,LanguagePreference::English=>1,LanguagePreference::Spanish=>2}}}
-            pub fn assign(self,current:&mut AppSettings,value:i32)->Result<(),PortError> {let mut s=current.clone();match self {$(Self::$b=>{let target=&mut s.$($bf).+; *target=match value{0=>false,1=>true,_=>return Err(PortError::new("settings.status.invalidNumber","expected boolean preference"))};},)*$(Self::$n=>{let target=&mut s.$($nf).+; *target=u16::try_from(value).map_err(|e|PortError::new("settings.status.invalidNumber",e))?;},)*Self::Language=>s.language=match value{0=>LanguagePreference::System,1=>LanguagePreference::English,2=>LanguagePreference::Spanish,_=>return Err(PortError::new("settings.status.invalidNumber","invalid locale choice"))}}s.validate()?;*current=s;Ok(())}
+            pub fn value(self,s:&AppSettings)->i32 {match self {$(Self::$b=>i32::from(s.$($bf).+),)*$(Self::$n=>i32::from(s.$($nf).+),)*Self::StatusRing=>s.desktop.status_ring as i32,Self::WidgetLeft=>s.desktop.widgets.left as i32,Self::WidgetRight=>s.desktop.widgets.right as i32,Self::Language=>match s.language{LanguagePreference::System=>0,LanguagePreference::English=>1,LanguagePreference::Spanish=>2}}}
+            pub fn assign(self,current:&mut AppSettings,value:i32)->Result<(),PortError> {let mut s=current.clone();match self {$(Self::$b=>{let target=&mut s.$($bf).+; *target=match value{0=>false,1=>true,_=>return Err(PortError::new("settings.status.invalidNumber","expected boolean preference"))};},)*$(Self::$n=>{let target=&mut s.$($nf).+; *target=u16::try_from(value).map_err(|e|PortError::new("settings.status.invalidNumber",e))?;},)*Self::StatusRing=>s.desktop.status_ring=select(&StatusRing::ALL,value)?,Self::WidgetLeft=>s.desktop.widgets.left=select(&Widget::ALL,value)?,Self::WidgetRight=>s.desktop.widgets.right=select(&Widget::ALL,value)?,Self::Language=>s.language=match value{0=>LanguagePreference::System,1=>LanguagePreference::English,2=>LanguagePreference::Spanish,_=>return Err(PortError::new("settings.status.invalidNumber","invalid locale choice"))}}s.validate()?;*current=s;Ok(())}
         }
     }
 }
+fn select<T: Copy>(choices: &[T], index: i32) -> Result<T, PortError> {
+    choices
+        .get(index as usize)
+        .copied()
+        .ok_or_else(|| PortError::new("settings.status.invalidNumber", "invalid choice"))
+}
 preference_fields! {
-    bool {MouseMove=>is_mouse_move_enabled,Startup=>desktop.start_with_windows,Minimal=>is_minimal_notch,Mascot=>is_mascot_enabled,Sounds=>reminders.sounds,HideFullscreen=>desktop.hide_in_fullscreen,OpenClick=>desktop.open_on_click,PageIcons=>desktop.page_icons,Fast=>desktop.fast_animations,Lyrics=>is_lyrics_enabled,MaEnabled=>music_assistant.is_enabled,VoiceEnabled=>wyoming.is_enabled,TaskStart=>reminders.task_start,TaskEnd=>reminders.task_end,Monday=>desktop.calendar_starts_monday,Week=>desktop.calendar_week_view,WaterEnabled=>water.enabled,EmptyShelf=>desktop.empty_shelf_on_start,HudVolume=>desktop.hud_volume,HudBrightness=>desktop.hud_brightness,HudCaps=>desktop.hud_caps_lock,HudLanguage=>desktop.hud_input_language,PopupBattery=>desktop.popup_battery,PopupWifi=>desktop.popup_wifi,PopupHeadphones=>desktop.popup_headphones}
-    number {Scale=>desktop.scale_percent,Snooze=>reminders.snooze_minutes,TaskMinutes=>reminders.task_minutes,FocusMinutes=>reminders.focus_minutes,ShortMinutes=>reminders.short_break_minutes,LongMinutes=>reminders.long_break_minutes,Cycles=>reminders.focus_cycles,Goal=>water.goal_ml,Bottle=>water.bottle_ml,From=>water.active_from_minute,Until=>water.active_until_minute}
+    bool {Floating=>desktop.appearance.floating,Glass=>desktop.appearance.glass,WidgetsEnabled=>desktop.widgets.enabled,MouseMove=>is_mouse_move_enabled,Startup=>desktop.start_with_windows,Minimal=>is_minimal_notch,Mascot=>is_mascot_enabled,Sounds=>reminders.sounds,HideFullscreen=>desktop.hide_in_fullscreen,OpenClick=>desktop.open_on_click,PageIcons=>desktop.page_icons,Fast=>desktop.fast_animations,Lyrics=>is_lyrics_enabled,MaEnabled=>music_assistant.is_enabled,VoiceEnabled=>wyoming.is_enabled,TaskStart=>reminders.task_start,TaskEnd=>reminders.task_end,Monday=>desktop.calendar_starts_monday,Week=>desktop.calendar_week_view,WaterEnabled=>water.enabled,EmptyShelf=>desktop.empty_shelf_on_start,HudVolume=>desktop.hud_volume,HudBrightness=>desktop.hud_brightness,HudCaps=>desktop.hud_caps_lock,HudLanguage=>desktop.hud_input_language,PopupBattery=>desktop.popup_battery,PopupWifi=>desktop.popup_wifi,PopupHeadphones=>desktop.popup_headphones,QuickShareVisible=>quick_share.visible}
+    number {GlassTint=>desktop.appearance.tint_percent,FirstCity=>desktop.widgets.first_city,SecondCity=>desktop.widgets.second_city,Scale=>desktop.scale_percent,Snooze=>reminders.snooze_minutes,TaskMinutes=>reminders.task_minutes,FocusMinutes=>reminders.focus_minutes,ShortMinutes=>reminders.short_break_minutes,LongMinutes=>reminders.long_break_minutes,Cycles=>reminders.focus_cycles,Goal=>water.goal_ml,Bottle=>water.bottle_ml,From=>water.active_from_minute,Until=>water.active_until_minute}
 }
 impl Preference {
     pub fn display_value(self, value: i32) -> String {
@@ -193,7 +220,7 @@ impl Preference {
     }
 }
 
-pub const SECTIONS: [&str; 12] = [
+pub const SECTIONS: [&str; 15] = [
     "nav-general",
     "nav-display",
     "nav-appearance",
@@ -206,6 +233,9 @@ pub const SECTIONS: [&str; 12] = [
     "nav-hud",
     "nav-about",
     "nav-mouse-move",
+    "nav-status-ring",
+    "nav-widgets",
+    "nav-quick-share",
 ];
 struct Form<'a> {
     scene: &'a mut Scene,
@@ -426,13 +456,16 @@ impl Form<'_> {
         let value = key.value(self.settings);
         let (minimum, maximum) = match key {
             Preference::Bottle => (50, 65500),
+            Preference::GlassTint => (0, 100),
+            Preference::FirstCity | Preference::SecondCity => (0, CITIES.len() as i32 - 1),
             Preference::From => (0, Preference::Until.value(self.settings) - 15),
             Preference::Until => (Preference::From.value(self.settings) + 15, 1440),
             _ => unreachable!("step control preference"),
         };
         for (i, direction) in [-1, 1].iter().enumerate() {
             let next = value + direction * step;
-            let enabled = (minimum..=maximum).contains(&next);
+            let enabled = (minimum..=maximum).contains(&next)
+                && (key != Preference::GlassTint || self.settings.desktop.appearance.glass);
             let r = Rect::new(
                 self.x + self.width - 132. + i as f32 * 96.,
                 self.y + 9.,
@@ -455,10 +488,13 @@ impl Form<'_> {
         }
         self.scene.text(
             Rect::new(self.x + self.width - 106., self.y, 66., 40.),
-            if matches!(key, Preference::From | Preference::Until) {
-                key.display_value(value)
-            } else {
-                format!("{value} ml")
+            match key {
+                Preference::From | Preference::Until => key.display_value(value),
+                Preference::GlassTint => format!("{value}%"),
+                Preference::FirstCity | Preference::SecondCity => {
+                    CITIES[value as usize].name.into()
+                }
+                _ => format!("{value} ml"),
             },
             11.,
             0xf1f1f3,
@@ -468,6 +504,83 @@ impl Form<'_> {
         self.y += 40.;
         self.separator();
     }
+    fn tiles(
+        &mut self,
+        key: Preference,
+        items: &[(&str, &str)],
+        columns: usize,
+        preview_height: f32,
+        mut preview: impl FnMut(&mut Scene, Rect, usize),
+    ) {
+        let gap = 8.;
+        let tile_width = (self.width - 24. - (columns - 1) as f32 * gap) / columns as f32;
+        let tile_height = preview_height
+            + if items.iter().any(|(_, help)| !help.is_empty()) {
+                42.
+            } else {
+                32.
+            };
+        self.y += 8.;
+        for (i, (label, help)) in items.iter().enumerate() {
+            let tile = Rect::new(
+                self.x + 12. + (i % columns) as f32 * (tile_width + gap),
+                self.y + (i / columns) as f32 * (tile_height + gap),
+                tile_width,
+                tile_height,
+            );
+            let selected = key.value(self.settings) == i as i32;
+            self.scene
+                .round(tile, 10., if selected { 0x38383d } else { 0x313134 });
+            if selected {
+                self.scene.border(tile.inset(0.5), 10., 0x168cff, 1.5);
+            }
+            let frame = Rect::new(tile.x + 7., tile.y + 7., tile.w - 14., preview_height - 6.);
+            self.scene.round(frame, 6., 0x242733);
+            preview(self.scene, frame, i);
+            if selected {
+                let badge = Rect::new(
+                    tile.x + tile.w - 21.,
+                    tile.y + preview_height + 4.,
+                    13.,
+                    13.,
+                );
+                self.scene.round(badge, 6.5, 0x168cff);
+                self.scene.icon(badge.inset(2.), "\u{e73e}", 0xffffff);
+            }
+            self.scene.text(
+                Rect::new(
+                    tile.x + 8.,
+                    tile.y + preview_height + 2.,
+                    tile.w - if selected { 29. } else { 16. },
+                    17.,
+                ),
+                tr(label),
+                11.,
+                self.ink,
+                true,
+                false,
+            );
+            if !help.is_empty() {
+                self.scene.text(
+                    Rect::new(
+                        tile.x + 8.,
+                        tile.y + preview_height + 18.,
+                        tile.w - 16.,
+                        14.,
+                    ),
+                    tr(help),
+                    9.,
+                    self.dim,
+                    false,
+                    false,
+                );
+            }
+            self.scene
+                .hit(tile, Action::Preference(key, i as i32), tr(label));
+        }
+        self.y += items.len().div_ceil(columns) as f32 * (tile_height + gap);
+    }
+
     fn field(&mut self, key: Field, label: &str, secret: bool) {
         self.scene.text(
             Rect::new(self.x + 14., self.y + 5., self.width - 28., 18.),
@@ -627,6 +740,39 @@ impl Form<'_> {
         self.y += 6.;
     }
 }
+fn clock_preview(scene: &mut Scene, frame: Rect, mode: Option<StatusRing>, offset: f32) {
+    let width = frame.w.min(73.);
+    let r = Rect::new(
+        frame.x + (frame.w - width) / 2.,
+        frame.y + offset,
+        width,
+        20.,
+    );
+    scene.round(r, 9., 0x08090c);
+    if let Some(mode) = mode {
+        super::widgets::ring(
+            scene,
+            Rect::new(r.x + 7., r.y + 5., 10., 10.),
+            mode,
+            0.72,
+            true,
+        );
+    }
+    let left = if mode == Some(StatusRing::Off) {
+        0.
+    } else {
+        13.
+    };
+    scene.text(
+        Rect::new(r.x + left, r.y, r.w - left, r.h),
+        "10:08",
+        9.,
+        0xffffff,
+        true,
+        true,
+    );
+}
+
 pub fn settings_scene(
     m: &UiModel,
     ui: &SettingsUi,
@@ -653,22 +799,35 @@ pub fn settings_scene(
     scene.hit(Rect::new(8., 8., 25., 25.), Action::CloseSettings, "Close");
     let colors = [
         0x8c8c91, 0x6760ec, 0x88888c, 0xff3d68, 0x23c451, 0xff5148, 0xff7a27, 0x078bff, 0xffb026,
-        0x30b3cd, 0x858589, 0x6c9bed,
+        0x30b3cd, 0x858589, 0x6c9bed, 0x23c451, 0x168cff, 0x4385f5,
     ];
-    let row_step = ((height - 92.) / (SECTIONS.len() - 1) as f32).min(32.);
+    let order = [
+        0,
+        STATUS_RING,
+        1,
+        2,
+        3,
+        WIDGETS,
+        4,
+        5,
+        6,
+        7,
+        8,
+        QUICK_SHARE,
+        9,
+        11,
+        ABOUT,
+    ];
+    let row_step = ((height - 94.) / (order.len() - 1) as f32).min(32.);
     let row_height = (row_step - 2.).min(30.);
-    for i in (0..SECTIONS.len())
-        .filter(|i| *i != 10)
-        .chain(std::iter::once(10))
-    {
+    for (ordinal, i) in order.into_iter().enumerate() {
         let label = SECTIONS[i];
-        let ordinal = if i < 10 { i } else { i - 1 };
-        let y = if i == 10 {
+        let y = if i == ABOUT {
             height - 44.
         } else {
             44. + ordinal as f32 * row_step
         };
-        let item_height = if i == 10 { 30. } else { row_height };
+        let item_height = if i == ABOUT { 30. } else { row_height };
         let row = Rect::new(10., y, 172., item_height);
         if i == ui.section {
             scene.round(row, 8., 0x2b2b2e);
@@ -678,15 +837,14 @@ pub fn settings_scene(
         let icon_size = (item_height - 6.).min(22.);
         let icon_y = y + (item_height - icon_size) / 2.;
         scene.round(Rect::new(18., icon_y, icon_size, icon_size), 6., colors[i]);
-        scene.icon(
-            Rect::new(20., icon_y + 2., icon_size - 4., icon_size - 4.),
-            &if i == 11 {
-                "mouse-move".into()
-            } else {
-                format!("settings-{i}")
-            },
-            0xffffff,
-        );
+        let icon = Rect::new(20., icon_y + 2., icon_size - 4., icon_size - 4.);
+        match i {
+            STATUS_RING => scene.ring(icon.inset(1.), 1., 0xffffff, 2.),
+            WIDGETS => scene.icon(icon, super::widgets::WIDGETS_ICON, 0xffffff),
+            QUICK_SHARE => scene.icon(icon, "quick-share-radar", 0xffffff),
+            11 => scene.icon(icon, "mouse-move", 0xffffff),
+            _ => scene.icon(icon, &format!("settings-{i}"), 0xffffff),
+        }
         scene.text(
             Rect::new(50., y, 128., item_height),
             tr(label),
@@ -717,7 +875,7 @@ pub fn settings_scene(
         true,
         false,
     );
-    let manual_save = matches!(ui.section, 2..=4);
+    let manual_save = matches!(ui.section, 2..=4 | WIDGETS | QUICK_SHARE);
     let content = Rect::new(
         214.,
         57.,
@@ -849,6 +1007,30 @@ pub fn settings_scene(
             f.y += 226.;
         }
         2 => {
+            f.heading("notch-style");
+            f.tiles(
+                P::Floating,
+                &[
+                    ("notch-classic", "notch-classic-help"),
+                    ("notch-floating", "notch-floating-help"),
+                ],
+                2,
+                62.,
+                |scene, frame, i| {
+                    if i == 0 {
+                        scene.round(Rect::new(frame.x, frame.y, frame.w, 2.), 1., 0x464a56);
+                    }
+                    clock_preview(
+                        scene,
+                        frame,
+                        Some(StatusRing::Auto),
+                        if i == 0 { 0. } else { 8. },
+                    );
+                },
+            );
+            f.separator();
+            f.toggle(P::Glass, &tr("notch-glass"), Some(&tr("notch-glass-help")));
+            f.step(P::GlassTint, &tr("notch-tint"), 5);
             f.heading("section-notch");
             f.choices(
                 P::OpenClick,
@@ -1114,7 +1296,91 @@ pub fn settings_scene(
                 f.y += 70.;
             }
         }
-        10 if ui.notices.is_some() => f.notices(ui.notices.unwrap(), content),
+        STATUS_RING => {
+            f.heading("ring-next-clock");
+            f.tiles(
+                P::StatusRing,
+                &[
+                    ("auto", "ring-auto-help"),
+                    ("nav-water", "ring-water-help"),
+                    ("nav-todo", "ring-todo-help"),
+                    ("off", "ring-off-help"),
+                ],
+                4,
+                68.,
+                |scene, frame, i| clock_preview(scene, frame, Some(StatusRing::ALL[i]), 7.),
+            );
+        }
+        WIDGETS => {
+            f.heading("widgets-page");
+            f.toggle(
+                P::WidgetsEnabled,
+                &tr("widgets-show"),
+                Some(&tr("widgets-help")),
+            );
+            f.heading("widgets-choose");
+            for (i, label) in ["widgets-left", "widgets-right"].into_iter().enumerate() {
+                let r = Rect::new(f.x + 14. + i as f32 * 71., f.y + 6., 65., 22.);
+                let right = i == 1;
+                f.scene.round(
+                    r,
+                    11.,
+                    if ui.widget_right == right {
+                        0x245888
+                    } else {
+                        0x333336
+                    },
+                );
+                f.scene.text(r, tr(label), 11., ink, false, true);
+                f.scene.hit(r, Action::WidgetSlot(right), tr(label));
+            }
+            f.y += 30.;
+            let items = Widget::ALL.map(|widget| (super::widgets::label(widget), ""));
+            f.tiles(
+                if ui.widget_right {
+                    P::WidgetRight
+                } else {
+                    P::WidgetLeft
+                },
+                &items,
+                4,
+                56.,
+                |scene, r, i| {
+                    let widget = Widget::ALL[i];
+                    super::widgets::preview(scene, r, widget, m);
+                    for (slot, selected, name) in [
+                        (0, m.settings.desktop.widgets.left, "L"),
+                        (1, m.settings.desktop.widgets.right, "R"),
+                    ] {
+                        if selected == widget {
+                            let badge =
+                                Rect::new(r.x + r.w - 12. - slot as f32 * 13., r.y, 12., 12.);
+                            scene.round(badge, 6., 0x245888);
+                            scene.text(badge, name, 8., 0xffffff, true, true);
+                        }
+                    }
+                },
+            );
+            f.heading("section-options");
+            f.step(P::FirstCity, &tr("widgets-city-first"), 1);
+            f.step(P::SecondCity, &tr("widgets-city-second"), 1);
+            f.field(Field::CountdownName, &tr("widgets-event"), false);
+            f.field(Field::CountdownDate, &tr("widgets-date"), false);
+        }
+        QUICK_SHARE => {
+            f.heading("nav-quick-share");
+            f.field(
+                Field::QuickShareName,
+                &crate::i18n::translate("quickShare.deviceName"),
+                false,
+            );
+            f.toggle(
+                P::QuickShareVisible,
+                &crate::i18n::translate("quickShare.visible"),
+                Some(&crate::i18n::translate("quickShare.visibilityHelp")),
+            );
+        }
+        ABOUT if ui.notices.is_some() => f.notices(ui.notices.unwrap(), content),
         _ => {
             let icon = crate::adapters::branding::app_icon();
             f.scene.paint.push(Paint::Bitmap(
@@ -1166,6 +1432,7 @@ pub fn settings_scene(
         !matches!(
             hit.action,
             Action::Preference(..)
+                | Action::WidgetSlot(_)
                 | Action::Display(..)
                 | Action::SelectDate(..)
                 | Action::GenerateTaskToken
