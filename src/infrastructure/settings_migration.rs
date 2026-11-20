@@ -3,6 +3,7 @@ use std::{fs, io, path::Path};
 use crate::application::settings::{
     AppSettings, DesktopSettings, QuickShareSettings, SETTINGS_SCHEMA_VERSION,
 };
+use crate::domain::notch::{NotchPage, PageOrder};
 use crate::domain::ports::PortError;
 
 /// Upgrade the stored document before the settings repository reads the current contract.
@@ -33,8 +34,35 @@ pub fn migrate(path: &Path) -> Result<(), PortError> {
                 *name = toml::Value::String(QuickShareSettings::default().device_name);
             }
         }
+        Some(7) => {}
         _ => return Err(parse_error("unsupported settings schema")),
     }
+    let desktop = document
+        .get_mut("desktop")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| parse_error("missing desktop settings"))?;
+    let widgets = desktop
+        .get_mut("widgets")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| parse_error("missing widgets settings"))?;
+    let mut pages = PageOrder::default();
+    let widgets_enabled = version != Some(4)
+        && widgets
+            .remove("enabled")
+            .and_then(|value| value.as_bool())
+            .ok_or_else(|| parse_error("invalid widgets.enabled in previous schema"))?;
+    if widgets_enabled {
+        pages.toggle(NotchPage::Widgets);
+    }
+    desktop.insert(
+        "pages".into(),
+        toml::Value::try_from(pages).map_err(parse_error)?,
+    );
+    let appearance = desktop
+        .get_mut("appearance")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| parse_error("missing appearance settings"))?;
+    appearance.insert("motion_blur".into(), toml::Value::Boolean(false));
     document["schema_version"] = toml::Value::Integer(i64::from(SETTINGS_SCHEMA_VERSION));
     let settings: AppSettings = document.try_into().map_err(parse_error)?;
     settings.validate()?;

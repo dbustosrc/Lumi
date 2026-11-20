@@ -84,8 +84,10 @@ fn setup(initial: AppSettings, fail_save: bool, fail_startup_for: Option<bool>) 
 #[test]
 fn defaults_use_current_schema_with_mouse_move_off_and_validate() {
     let defaults = AppSettings::default();
-    assert_eq!(defaults.schema_version, 7);
+    assert_eq!(defaults.schema_version, 8);
     assert!(!defaults.is_mouse_move_enabled);
+    assert_eq!(defaults.desktop.pages, PageOrder::default());
+    assert!(!defaults.desktop.appearance.motion_blur);
     assert!(defaults.validate().is_ok());
 }
 
@@ -118,7 +120,7 @@ fn schema_four_migration_preserves_existing_values_and_adds_current_desktop_defa
     legacy.desktop.display_id = "monitor-2".into();
     let mut document = toml::Value::try_from(legacy).unwrap();
     let desktop = document["desktop"].as_table_mut().unwrap();
-    for key in ["status_ring", "appearance", "widgets"] {
+    for key in ["status_ring", "appearance", "widgets", "pages"] {
         desktop.remove(key);
     }
     document.as_table_mut().unwrap().remove("quick_share");
@@ -128,12 +130,13 @@ fn schema_four_migration_preserves_existing_values_and_adds_current_desktop_defa
     let migrated = TomlSettingsRepository::new(path.clone()).load().unwrap();
     let _ = std::fs::remove_file(path);
 
-    assert_eq!(migrated.schema_version, 7);
+    assert_eq!(migrated.schema_version, 8);
     assert_eq!(migrated.music_assistant.token, "preserved-test-token");
     assert_eq!(migrated.desktop.display_id, "monitor-2");
     assert_eq!(migrated.desktop.status_ring, StatusRing::Auto);
     assert_eq!(migrated.desktop.appearance, NotchAppearance::default());
     assert_eq!(migrated.desktop.widgets, WidgetSettings::default());
+    assert_eq!(migrated.desktop.pages, PageOrder::default());
     assert_eq!(migrated.quick_share, QuickShareSettings::default());
 }
 
@@ -149,15 +152,24 @@ fn schema_five_migration_preserves_existing_values_and_adds_quick_share_defaults
     legacy.desktop.display_id = "monitor-2".into();
     let mut document = toml::Value::try_from(legacy).unwrap();
     document.as_table_mut().unwrap().remove("quick_share");
+    let desktop = document["desktop"].as_table_mut().unwrap();
+    desktop.remove("pages");
+    desktop["appearance"].as_table_mut().unwrap().remove("motion_blur");
+    desktop["widgets"]
+        .as_table_mut()
+        .unwrap()
+        .insert("enabled".into(), toml::Value::Boolean(true));
     std::fs::write(&path, toml::to_string_pretty(&document).unwrap()).unwrap();
 
     crate::infrastructure::settings_migration::migrate(&path).unwrap();
     let migrated = TomlSettingsRepository::new(path.clone()).load().unwrap();
     let _ = std::fs::remove_file(path);
 
-    assert_eq!(migrated.schema_version, 7);
+    assert_eq!(migrated.schema_version, 8);
     assert_eq!(migrated.music_assistant.token, "preserved-test-token");
     assert_eq!(migrated.desktop.display_id, "monitor-2");
+    assert!(migrated.desktop.pages.contains(NotchPage::Widgets));
+    assert!(!migrated.desktop.appearance.motion_blur);
     assert_eq!(migrated.quick_share, QuickShareSettings::default());
 }
 
@@ -177,14 +189,53 @@ fn quick_share_default_and_schema_six_migration_use_computer_name_but_keep_custo
         let mut legacy = AppSettings::default();
         legacy.schema_version = 6;
         legacy.quick_share.device_name = legacy_name;
-        std::fs::write(&path, toml::to_string_pretty(&legacy).unwrap()).unwrap();
+        let mut document = toml::Value::try_from(legacy).unwrap();
+        let desktop = document["desktop"].as_table_mut().unwrap();
+        desktop.remove("pages");
+        desktop["appearance"].as_table_mut().unwrap().remove("motion_blur");
+        desktop["widgets"]
+            .as_table_mut()
+            .unwrap()
+            .insert("enabled".into(), toml::Value::Boolean(true));
+        std::fs::write(&path, toml::to_string_pretty(&document).unwrap()).unwrap();
 
         crate::infrastructure::settings_migration::migrate(&path).unwrap();
         let migrated = TomlSettingsRepository::new(path.clone()).load().unwrap();
         let _ = std::fs::remove_file(path);
 
-        assert_eq!(migrated.schema_version, 7);
+        assert_eq!(migrated.schema_version, 8);
         assert_eq!(migrated.quick_share.device_name, expected_name);
+        assert!(migrated.desktop.pages.contains(NotchPage::Widgets));
+        assert!(!migrated.desktop.appearance.motion_blur);
+    }
+}
+
+#[test]
+fn schema_seven_migration_moves_the_widget_switch_into_page_order() {
+    for enabled in [false, true] {
+        let path = std::env::temp_dir().join(format!(
+            "lumi-settings-migrate-v7-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        let mut legacy = AppSettings::default();
+        legacy.schema_version = 7;
+        let mut document = toml::Value::try_from(legacy).unwrap();
+        let desktop = document["desktop"].as_table_mut().unwrap();
+        desktop.remove("pages");
+        desktop["appearance"].as_table_mut().unwrap().remove("motion_blur");
+        desktop["widgets"]
+            .as_table_mut()
+            .unwrap()
+            .insert("enabled".into(), toml::Value::Boolean(enabled));
+        std::fs::write(&path, toml::to_string_pretty(&document).unwrap()).unwrap();
+
+        crate::infrastructure::settings_migration::migrate(&path).unwrap();
+        let migrated = TomlSettingsRepository::new(path.clone()).load().unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(migrated.schema_version, 8);
+        assert_eq!(migrated.desktop.pages.contains(NotchPage::Widgets), enabled);
+        assert!(!migrated.desktop.appearance.motion_blur);
     }
 }
 
@@ -199,7 +250,7 @@ fn malformed_schema_four_migration_leaves_the_original_file_unchanged() {
     legacy.desktop.scale_percent = 125;
     let mut document = toml::Value::try_from(legacy).unwrap();
     let desktop = document["desktop"].as_table_mut().unwrap();
-    for key in ["status_ring", "appearance", "widgets"] {
+    for key in ["status_ring", "appearance", "widgets", "pages"] {
         desktop.remove(key);
     }
     document.as_table_mut().unwrap().remove("quick_share");
@@ -363,10 +414,11 @@ fn toml_repository_round_trips_desktop_appearance_widgets_and_reminder_settings(
     settings.desktop.appearance.floating = true;
     settings.desktop.appearance.glass = true;
     settings.desktop.appearance.tint_percent = 55;
-    settings.desktop.widgets.enabled = true;
+    settings.desktop.pages.toggle(NotchPage::Widgets);
+    settings.desktop.appearance.motion_blur = true;
     settings.desktop.widgets.left = Widget::Countdown;
     settings.desktop.widgets.right = Widget::Moon;
-    settings.desktop.widgets.first_city = 2;
+    settings.desktop.widgets.first_city = (CITIES.len() - 1) as u16;
     settings.desktop.widgets.second_city = 3;
     settings.desktop.widgets.countdown_date = "2026-11-14".into();
     settings.desktop.widgets.countdown_name = "Launch".into();
@@ -391,6 +443,7 @@ fn toml_repository_round_trips_desktop_appearance_widgets_and_reminder_settings(
     let _ = std::fs::remove_file(path);
 
     assert_eq!(loaded, settings);
+    assert_eq!(loaded.desktop.widgets.first_city, (CITIES.len() - 1) as u16);
 }
 
 #[test]

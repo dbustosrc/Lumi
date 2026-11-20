@@ -144,6 +144,7 @@ impl MediaSession {
         };
         let is_new_track = self.playback.track != snapshot.track;
         let is_new_status = self.playback.is_playing() != snapshot.is_playing();
+        let is_new_position = self.playback.position != snapshot.position;
         let is_new_track_id = self.playback.track.as_ref().map(|track| &track.id)
             != snapshot.track.as_ref().map(|track| &track.id);
         self.playback = snapshot;
@@ -156,7 +157,9 @@ impl MediaSession {
                 is_playing: self.playback.is_playing(),
             });
         }
-        self.last_progress_second = None;
+        if is_new_track || is_new_status || is_new_position {
+            self.last_progress_second = None;
+        }
         self.refresh_progress(Instant::now());
     }
 

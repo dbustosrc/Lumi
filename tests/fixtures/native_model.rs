@@ -20,7 +20,7 @@ use crate::application::quick_share::{Command as ShareCommand, Device, Snapshot,
 use crate::application::reminders::{FocusPhase, UtilityState};
 use crate::application::settings::AppSettings;
 use crate::domain::device::{HeadphoneStatus, PowerStatus};
-use crate::domain::notch::NotchView;
+use crate::domain::notch::{NotchPage, NotchView, PageOrder};
 use crate::domain::shelf::{ShelfContent, ShelfItem, ShelfItemKind};
 use crate::domain::todo::{TaskColor, TaskSchedule, TodoProgress, TodoTask};
 use crate::domain::water::WaterState;
@@ -128,6 +128,33 @@ fn quick_share_os_file_drop_scene_renders_two_translucent_destination_zones() {
     assert!(shelf.y >= body.y && shelf.y + shelf.h <= body.y + body.h);
     assert!(quick_share.y >= body.y && quick_share.y + quick_share.h <= body.y + body.h);
 
+    let pages = AppSettings::default().desktop.pages;
+    let both = views::enabled_file_drop_zones(body, &pages);
+    assert_eq!(both[0].unwrap().0, FileDropDestination::Shelf);
+    assert_eq!(both[1].unwrap().0, FileDropDestination::QuickShare);
+
+    let mut shelf_only = pages.clone();
+    shelf_only.toggle(crate::domain::notch::NotchPage::QuickShare);
+    let shelf_zones = views::enabled_file_drop_zones(body, &shelf_only);
+    let (_, shelf_zone) = shelf_zones[0].unwrap();
+    assert_eq!(shelf_zone.x, body.x + 42.);
+    assert_eq!(shelf_zone.w, body.w - 84.);
+    assert!(shelf_zones[1].is_none());
+
+    let mut share_only = pages.clone();
+    share_only.toggle(crate::domain::notch::NotchPage::Shelf);
+    let share_zones = views::enabled_file_drop_zones(body, &share_only);
+    let (_, share_zone) = share_zones[1].unwrap();
+    assert_eq!(share_zone.x, body.x + 42.);
+    assert_eq!(share_zone.w, body.w - 84.);
+    assert!(share_zones[0].is_none());
+
+    let mut empty = PageOrder::default();
+    for page in empty.enabled().to_vec() {
+        empty.toggle(page);
+    }
+    assert_eq!(views::enabled_file_drop_zones(body, &empty), [None, None]);
+
     for active in [FileDropDestination::Shelf, FileDropDestination::QuickShare] {
         model.file_drop_destination = Some(active);
         let scene = views::notch_scene(&model, NotchView::FileDrop, Instant::now());
@@ -149,6 +176,51 @@ fn quick_share_os_file_drop_scene_renders_two_translucent_destination_zones() {
         }
         assert!(scene_has_text(&scene, "Quick Share"));
     }
+}
+
+#[test]
+fn page_settings_reordering_slides_rows_and_settles_at_the_new_order() {
+    const WIDTH: f32 = 800.;
+    const HEIGHT: f32 = 600.;
+    let mut model = UiModel::new(AppSettings::default());
+    let pages = model.settings.desktop.pages.clone();
+    let mut ui = SettingsUi::new(&model.settings, true);
+    ui.section = 15;
+    let start = Instant::now();
+    ui.changed = start - Duration::from_secs(1);
+    let page_y = |scene: &Scene, page| {
+        let accent = views::page_appearance(page).2;
+        scene.paint.iter().find_map(|paint| match paint {
+            Paint::AlphaRound(rect, _, color, _) if *color == accent => Some(rect.y),
+            _ => None,
+        }).unwrap()
+    };
+    let (initial, _) = settings::settings_scene(&model, &ui, &[], WIDTH, HEIGHT, start);
+    let initial_y = page_y(&initial, NotchPage::Pomodoro);
+
+    ui.track_page_drag(
+        &pages,
+        NotchPage::Charging,
+        Some(NotchPage::Pomodoro),
+        16.,
+        start,
+    );
+    assert!(ui.controls_animating());
+    let middle = start + Duration::from_millis(80);
+    let (dragging, _) = settings::settings_scene(&model, &ui, &[], WIDTH, HEIGHT, middle);
+    let middle_y = page_y(&dragging, NotchPage::Pomodoro);
+    assert!(middle_y > initial_y && middle_y < initial_y + 32.);
+
+    let mut reordered = pages;
+    assert!(reordered.move_page(NotchPage::Charging, NotchPage::Pomodoro));
+    ui.settle_pages(&reordered, middle);
+    ui.page_drag = None;
+    model.settings.desktop.pages = reordered;
+    let settled = middle + Duration::from_millis(160);
+    ui.update_motions(settled);
+    assert!(!ui.controls_animating());
+    let (after, _) = settings::settings_scene(&model, &ui, &[], WIDTH, HEIGHT, settled);
+    assert_eq!(page_y(&after, NotchPage::Pomodoro), initial_y + 32.);
 }
 
 #[test]
@@ -842,11 +914,12 @@ fn navigation_stays_open_between_expanded_pages_and_closes_on_compact_view() {
 
 #[test]
 fn quick_share_is_a_navigable_page_with_its_own_view() {
-    use crate::domain::notch::{NotchContext, NotchPage, resolve_view};
+    use crate::domain::notch::{NotchContext, resolve_view};
 
-    assert_eq!(NotchPage::Shelf.step(1, true), NotchPage::QuickShare);
-    assert_eq!(NotchPage::QuickShare.step(-1, true), NotchPage::Shelf);
-    assert_eq!(NotchPage::QuickShare.step(1, true), NotchPage::Todo);
+    let pages = PageOrder::default();
+    assert_eq!(pages.step(NotchPage::Shelf, 1), Some(NotchPage::QuickShare));
+    assert_eq!(pages.step(NotchPage::QuickShare, -1), Some(NotchPage::Shelf));
+    assert_eq!(pages.step(NotchPage::QuickShare, 1), Some(NotchPage::Todo));
     assert_eq!(NotchPage::QuickShare.view(), NotchView::QuickShare);
     assert_eq!(
         resolve_view(&NotchContext {
@@ -1274,6 +1347,108 @@ fn settings_scrollbar_maps_track_click_drag_offset_and_scroll_endpoints() {
 }
 
 #[test]
+fn display_settings_scene_maps_monitors_by_position_and_keeps_their_labels() {
+    const WIDTH: f32 = 654.;
+    const HEIGHT: f32 = 700.;
+    let displays = [
+        settings::Display {
+            id: r"\\.\DISPLAY1".into(),
+            label: "DISPLAY1".into(),
+            rect: Rect::new(1920., -1., 1920., 1200.),
+            work: Rect::new(1920., -1., 1920., 1160.),
+            scale: 1.,
+            primary: false,
+        },
+        settings::Display {
+            id: r"\\.\DISPLAY2".into(),
+            label: "DISPLAY2".into(),
+            rect: Rect::new(0., 0., 1920., 1080.),
+            work: Rect::new(0., 0., 1920., 1040.),
+            scale: 1.,
+            primary: true,
+        },
+    ];
+    let mut model = UiModel::new(AppSettings::default());
+    let mut ui = SettingsUi::new(&model.settings, true);
+    ui.section = 1;
+    ui.changed = Instant::now() - Duration::from_secs(1);
+    let (scene, max_scroll) = settings::settings_scene(
+        &model,
+        &ui,
+        &displays,
+        WIDTH,
+        HEIGHT,
+        Instant::now(),
+    );
+
+    let display1 = scene
+        .hits
+        .iter()
+        .find(|hit| hit.action == Action::Display(displays[0].id.clone()))
+        .unwrap();
+    let display2 = scene
+        .hits
+        .iter()
+        .find(|hit| hit.action == Action::Display(displays[1].id.clone()))
+        .unwrap();
+    assert!(display2.rect.x < display1.rect.x);
+    assert!(display1.rect.y < display2.rect.y);
+    assert!((display1.rect.w / display1.rect.h - 1.6).abs() < 0.01);
+    assert!((display2.rect.w / display2.rect.h - (16. / 9.)).abs() < 0.01);
+    assert!(display2.rect.x >= 226.);
+    assert!(display1.rect.x + display1.rect.w <= WIDTH - 12.);
+    assert!(display1.label.starts_with("1 · 1920×1200"));
+    assert!(display2.label.starts_with("2 · 1920×1080"));
+    assert_eq!(display1.label.matches(" · ").count(), 1);
+    assert_eq!(display2.label.matches(" · ").count(), 2);
+    assert!(scene.paint.iter().any(|paint| matches!(
+        paint,
+        Paint::Border(rect, _, 0x277e42, _) if *rect == display2.rect.inset(0.5)
+    )));
+    assert_eq!(max_scroll, 0.);
+    assert!(!scene
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::ScrollSettings));
+
+    let notch_marker = |scene: &Scene| {
+        let markers: Vec<_> = scene
+            .paint
+            .iter()
+            .filter_map(|paint| match paint {
+                Paint::Round(rect, _, 0x16241c) => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(markers.len(), 1);
+        markers[0]
+    };
+    let marker = notch_marker(&scene);
+    assert!(display2
+        .rect
+        .contains(marker.x + marker.w / 2., marker.y + marker.h / 2.));
+
+    model.settings.desktop.display_id = displays[0].id.clone();
+    let (selected_scene, _) = settings::settings_scene(
+        &model,
+        &ui,
+        &displays,
+        WIDTH,
+        HEIGHT,
+        Instant::now(),
+    );
+    let display1 = selected_scene
+        .hits
+        .iter()
+        .find(|hit| hit.action == Action::Display(displays[0].id.clone()))
+        .unwrap();
+    let marker = notch_marker(&selected_scene);
+    assert!(display1
+        .rect
+        .contains(marker.x + marker.w / 2., marker.y + marker.h / 2.));
+}
+
+#[test]
 fn settings_manual_save_tracks_only_changed_drafts_and_keeps_them_after_auto_preferences() {
     const WIDTH: f32 = 654.;
     const HEIGHT: f32 = 506.;
@@ -1398,6 +1573,42 @@ fn selecting_a_date_scrolls_to_its_first_task_without_filtering_the_agenda() {
     assert_eq!(model.selected_date, "2025-03-07");
     assert_eq!(model.task_scroll, 34.);
     assert_eq!(model.tasks.len(), 3);
+}
+
+#[test]
+fn task_date_index_rebuilds_with_task_updates_and_calendar_updates_preserve_tasks() {
+    let mut model = UiModel::new(AppSettings::default());
+    let mut recurring = task(2, date(2025, 3, 7));
+    recurring.schedule.daily = true;
+    let now = Instant::now();
+
+    model.apply(
+        ViewUpdate::Tasks {
+            tasks: vec![task(1, date(2025, 3, 5)), recurring],
+            progress: TodoProgress::default(),
+        },
+        now,
+    );
+    assert!(model.tasks_on(date(2025, 3, 5)));
+    assert!(!model.tasks_on(date(2025, 3, 6)));
+    assert!(model.tasks_on(date(2025, 3, 7)));
+    assert!(model.tasks_on(date(2025, 3, 8)));
+
+    let grid = crate::domain::calendar::calendar_grid(date(2025, 3, 5), 0, true, false).unwrap();
+    model.apply(ViewUpdate::Calendar(grid), now);
+    assert_eq!(model.tasks.len(), 2);
+    assert!(model.tasks_on(date(2025, 3, 8)));
+
+    model.apply(
+        ViewUpdate::Tasks {
+            tasks: vec![task(3, date(2025, 3, 10))],
+            progress: TodoProgress::default(),
+        },
+        now,
+    );
+    assert!(!model.tasks_on(date(2025, 3, 5)));
+    assert!(!model.tasks_on(date(2025, 3, 8)));
+    assert!(model.tasks_on(date(2025, 3, 10)));
 }
 
 #[test]
@@ -1529,7 +1740,7 @@ fn month_and_week_view_choice_is_in_settings_but_not_the_notch() {
     }
 
     let mut ui = SettingsUi::new(&model.settings, true);
-    ui.section = 5;
+    ui.section = 4;
     let (scene, _) = settings::settings_scene(&model, &ui, &[], 800., 600., now);
     assert!(
         scene
@@ -1591,17 +1802,45 @@ fn mouse_move_preference_defaults_off_and_persists_as_a_boolean() {
 }
 
 #[test]
+fn settings_switch_animation_reverses_without_a_position_jump() {
+    let now = Instant::now();
+    let action = Action::Preference(Preference::MotionBlur, 0);
+    let mut ui = SettingsUi::new(&AppSettings::default(), true);
+
+    ui.animate_switch(action.clone(), false, true, now);
+    assert!(ui.controls_animating());
+    let middle = now + Duration::from_millis(80);
+    let position = ui.switch_position(&action, true, middle);
+    assert!(position > 0. && position < 1.);
+
+    ui.animate_switch(action.clone(), true, false, middle);
+    assert_eq!(ui.switch_position(&action, true, middle), position);
+    let finished = middle + Duration::from_millis(175);
+    assert_eq!(ui.switch_position(&action, false, finished), 0.);
+    ui.update_motions(finished);
+    assert!(!ui.controls_animating());
+}
+
+#[test]
 fn appearance_and_status_ring_settings_expose_and_select_the_configured_values() {
     const WIDTH: f32 = 800.;
     const HEIGHT: f32 = 600.;
     let mut model = UiModel::new(AppSettings::default());
+    for section in [1, 4, 10, 15] {
+        assert!(settings::section_available(section, &model.settings));
+    }
+    for section in [5, 12] {
+        assert!(!settings::section_available(section, &model.settings));
+    }
     Preference::Floating.assign(&mut model.settings, 1).unwrap();
     Preference::Glass.assign(&mut model.settings, 1).unwrap();
     Preference::GlassTint.assign(&mut model.settings, 55).unwrap();
+    Preference::MotionBlur.assign(&mut model.settings, 1).unwrap();
     Preference::StatusRing.assign(&mut model.settings, 2).unwrap();
     assert_eq!(Preference::Floating.value(&model.settings), 1);
     assert_eq!(Preference::Glass.value(&model.settings), 1);
     assert_eq!(Preference::GlassTint.value(&model.settings), 55);
+    assert_eq!(Preference::MotionBlur.value(&model.settings), 1);
     assert_eq!(Preference::StatusRing.value(&model.settings), 2);
 
     let now = Instant::now();
@@ -1618,9 +1857,23 @@ fn appearance_and_status_ring_settings_expose_and_select_the_configured_values()
     assert!(appearance_scene.hits.iter().any(|hit| {
         hit.action == Action::Preference(Preference::Glass, 0)
     }));
+    assert!(appearance_scene
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::Preference(Preference::MotionBlur, 0)));
+    Preference::MotionBlur.assign(&mut model.settings, 0).unwrap();
+    let mut appearance_off = SettingsUi::new(&model.settings, true);
+    appearance_off.section = 2;
+    appearance_off.changed = now - Duration::from_secs(1);
+    let (appearance_off_scene, _) =
+        settings::settings_scene(&model, &appearance_off, &[], WIDTH, HEIGHT, now);
+    assert!(appearance_off_scene
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::Preference(Preference::MotionBlur, 1)));
 
     let mut ring = SettingsUi::new(&model.settings, true);
-    ring.section = 12;
+    ring.section = 1;
     ring.changed = now - Duration::from_secs(1);
     let (ring_scene, _) = settings::settings_scene(&model, &ring, &[], WIDTH, HEIGHT, now);
     for value in 0..4 {
@@ -1641,9 +1894,6 @@ fn appearance_and_status_ring_settings_expose_and_select_the_configured_values()
     widgets.section = 13;
     widgets.changed = now - Duration::from_secs(1);
     let (left_widgets, _) = settings::settings_scene(&model, &widgets, &[], WIDTH, HEIGHT, now);
-    assert!(left_widgets.hits.iter().any(|hit| {
-        hit.action == Action::Preference(Preference::WidgetsEnabled, 1)
-    }));
     assert!(left_widgets
         .hits
         .iter()
@@ -1665,6 +1915,60 @@ fn appearance_and_status_ring_settings_expose_and_select_the_configured_values()
             hit.action == Action::Preference(Preference::WidgetRight, value)
         }));
     }
+
+    let mut pages = SettingsUi::new(&model.settings, true);
+    pages.section = 15;
+    pages.changed = now - Duration::from_secs(1);
+    let (pages_scene, _) = settings::settings_scene(&model, &pages, &[], WIDTH, HEIGHT, now);
+    assert!(pages_scene
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::TogglePage(NotchPage::Widgets)));
+    assert_eq!(
+        pages_scene
+            .hits
+            .iter()
+            .filter(|hit| matches!(hit.action, Action::ReorderPage(_)))
+            .count(),
+        model.settings.desktop.pages.enabled().len()
+    );
+    assert!(pages_scene
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::ReorderPage(NotchPage::Shelf)));
+    assert!(!pages_scene
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::ReorderPage(NotchPage::Widgets)));
+
+    pages.page_drag = Some((NotchPage::Charging, Some(NotchPage::Pomodoro)));
+    let (drag_scene, _) = settings::settings_scene(&model, &pages, &[], WIDTH, HEIGHT, now);
+    assert!(drag_scene.paint.iter().any(
+        |paint| matches!(paint, Paint::Line(_, _, _, _, 0x46a8ff, _))
+    ));
+    let toggle = drag_scene
+        .hits
+        .iter()
+        .find(|hit| hit.action == Action::TogglePage(NotchPage::Charging))
+        .unwrap();
+    assert!(drag_scene
+        .action_at(toggle.rect.x + toggle.rect.w / 2., toggle.rect.y + toggle.rect.h / 2.)
+        .is_some_and(|(_, hit)| hit.action == Action::TogglePage(NotchPage::Charging)));
+
+    let mut empty_model = UiModel::new(AppSettings::default());
+    for page in empty_model.settings.desktop.pages.enabled().to_vec() {
+        empty_model.settings.desktop.pages.toggle(page);
+    }
+    let (empty_pages_scene, _) =
+        settings::settings_scene(&empty_model, &pages, &[], WIDTH, HEIGHT, now);
+    assert!(empty_pages_scene
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::TogglePage(NotchPage::Music)));
+    assert!(!empty_pages_scene
+        .hits
+        .iter()
+        .any(|hit| matches!(hit.action, Action::ReorderPage(_))));
 }
 
 fn scene_has_icon(scene: &Scene, name: &str) -> bool {

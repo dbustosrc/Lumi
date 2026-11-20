@@ -110,8 +110,8 @@ pub const SURFACE_HEIGHT: f32 = 182.;
 pub const FLOATING_GAP: f32 = 8.;
 pub const COLLAPSED_NAV_WIDTH: f32 = 82.;
 
-pub fn expanded_nav_width(widgets_enabled: bool) -> f32 {
-    16. + (crate::domain::notch::NotchPage::available(widgets_enabled).len() + 1) as f32 * 28.
+pub fn expanded_nav_width(page_count: usize) -> f32 {
+    16. + (page_count + 1) as f32 * 28.
 }
 pub const TASK_COLORS: [u32; 5] = [0x38d36f, 0x27a9ff, 0xffb649, 0xff6677, 0xbc8aff];
 
@@ -312,6 +312,8 @@ pub struct UiModel {
     pub volume_changed: Instant,
     pub volume_from: f32,
     pub tasks: Vec<TodoTask>,
+    dated_tasks: HashSet<chrono::NaiveDate>,
+    first_daily_task: Option<chrono::NaiveDate>,
     pub progress: TodoProgress,
     pub progress_today: TodoProgress,
     pub voice: VoiceState,
@@ -401,6 +403,8 @@ impl UiModel {
             volume_changed: settled,
             volume_from: 0.,
             tasks: vec![],
+            dated_tasks: HashSet::new(),
+            first_daily_task: None,
             progress: TodoProgress::default(),
             progress_today: TodoProgress::default(),
             voice: VoiceState::Idle,
@@ -462,6 +466,25 @@ impl UiModel {
             start: now,
         }
     }
+    pub fn tasks_on(&self, date: chrono::NaiveDate) -> bool {
+        self.first_daily_task.is_some_and(|first| date >= first) || self.dated_tasks.contains(&date)
+    }
+
+    pub(super) fn set_tasks(&mut self, tasks: Vec<TodoTask>) {
+        self.dated_tasks.clear();
+        self.first_daily_task = None;
+        for task in &tasks {
+            let date = task.schedule.date;
+            if task.schedule.daily {
+                self.first_daily_task =
+                    Some(self.first_daily_task.map_or(date, |first| first.min(date)));
+            } else {
+                self.dated_tasks.insert(date);
+            }
+        }
+        self.tasks = tasks;
+    }
+
     pub fn apply(&mut self, update: ViewUpdate, now: Instant) {
         match update {
             ViewUpdate::MouseMoveStatus(error) => self.mouse_move_error = error,
@@ -479,7 +502,10 @@ impl UiModel {
             ViewUpdate::View(view) => {
                 if self.view != view {
                     self.previous_view = self.view;
-                    if let (Some(old), Some(new)) = (page_index(self.view), page_index(view)) {
+                    let pages = self.settings.desktop.pages.enabled();
+                    if let (Some(old), Some(new)) =
+                        (page_index(self.view, pages), page_index(view, pages))
+                    {
                         self.page_direction = if new >= old { 1. } else { -1. };
                     }
                     self.view = view;
@@ -531,14 +557,11 @@ impl UiModel {
                     self.mascot,
                     now,
                 );
-                self.tasks = tasks;
+                self.set_tasks(tasks);
                 self.progress = progress;
                 self.progress_today = TodoProgress::for_day(&self.tasks, self.clock.date_naive());
             }
-            ViewUpdate::Calendar { grid, tasks } => {
-                self.calendar = Some(grid);
-                self.tasks = tasks;
-            }
+            ViewUpdate::Calendar(grid) => self.calendar = Some(grid),
             ViewUpdate::TodoEditorResult { error_key } => {
                 self.editor_error = error_key;
                 if error_key.is_none() {
@@ -601,8 +624,16 @@ impl UiModel {
                 let previous = std::mem::replace(&mut self.shelf, items);
                 self.shelf_removal.remember(previous, &self.shelf, now);
             }
-            ViewUpdate::ShelfThumbnail { id, thumbnail } => {
-                if let Some(item) = self.shelf.iter_mut().find(|i| i.item.id == id) {
+            ViewUpdate::ShelfThumbnail {
+                id,
+                revision,
+                thumbnail,
+            } => {
+                if let Some(item) = self
+                    .shelf
+                    .iter_mut()
+                    .find(|i| i.item.id == id && i.item.added_at == revision)
+                {
                     item.thumbnail = Some(thumbnail);
                 }
             }
@@ -1015,18 +1046,16 @@ fn tween(
     let t = (now.duration_since(start).as_secs_f32() / duration).clamp(0., 1.);
     from + (to - from) * cubic_bezier(t, curve.0, curve.1, curve.2, curve.3)
 }
-pub fn page_index(view: NotchView) -> Option<usize> {
+pub fn page_index(view: NotchView, pages: &[crate::domain::notch::NotchPage]) -> Option<usize> {
     let view = if view == NotchView::Lyrics {
         NotchView::Music
     } else {
         view
     };
-    crate::domain::notch::NotchPage::ALL
-        .iter()
-        .position(|page| page.view() == view)
+    pages.iter().position(|page| page.view() == view)
 }
 pub fn is_expanded(view: NotchView) -> bool {
-    page_index(view).is_some()
+    page_index(view, &crate::domain::notch::NotchPage::ALL).is_some()
 }
 
 pub fn cubic_bezier(x: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {

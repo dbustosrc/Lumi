@@ -1,6 +1,5 @@
 //! Real-time PCM audio output sink backed by `cpal` (WASAPI shared mode on Windows).
-//! Pre-warms `IAudioClient` in paused state (`0%` idle CPU) and triggers playback on
-//! the very first PCM chunk so sample `0:00.000` plays with sub-millisecond latency.
+//! Opens the audio device when Sendspin starts a stream, before its first PCM chunk.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -28,8 +27,7 @@ struct OutputDeviceHandle {
     stream: cpal::Stream,
 }
 
-/// Pre-warmed audio output sink converting Sendspin PCM frames into the default
-/// OS audio output device without cold-open delay or truncated track intros.
+/// Converts Sendspin PCM frames to the default Windows audio output format.
 pub struct AudioOutputSink {
     queue: StereoQueue,
     volume: Arc<AtomicU8>,
@@ -41,16 +39,14 @@ pub struct AudioOutputSink {
 
 impl AudioOutputSink {
     pub fn new() -> Self {
-        let mut sink = Self {
-            queue: Arc::new(Mutex::new(VecDeque::with_capacity(96_000))),
+        Self {
+            queue: Arc::new(Mutex::new(VecDeque::new())),
             volume: Arc::new(AtomicU8::new(100)),
             is_muted: Arc::new(AtomicBool::new(false)),
             stream_format: None,
             output: None,
             is_stream_playing: false,
-        };
-        sink.ensure_warm_output();
-        sink
+        }
     }
 
     pub fn volume(&self) -> u8 {
@@ -83,9 +79,12 @@ impl AudioOutputSink {
     }
 
     pub fn stop_stream(&mut self) {
-        self.pause_active_stream();
-        self.clear();
+        self.output = None;
+        self.is_stream_playing = false;
         self.stream_format = None;
+        if let Ok(mut queue) = self.queue.lock() {
+            *queue = VecDeque::new();
+        }
     }
 
     pub fn push_pcm(&mut self, payload: &[u8]) {
@@ -99,7 +98,11 @@ impl AudioOutputSink {
         if decoded.is_empty() {
             return;
         }
-        let frames = resample_stereo(&decoded, format.sample_rate, out.device_sample_rate);
+        let frames = if format.sample_rate == out.device_sample_rate {
+            decoded
+        } else {
+            resample_stereo(&decoded, format.sample_rate, out.device_sample_rate)
+        };
         let max_frames = (out.device_sample_rate as usize) * MAX_BUFFERED_SECONDS;
         if let Ok(mut guard) = self.queue.lock() {
             let overflow = (guard.len() + frames.len()).saturating_sub(max_frames);
@@ -174,7 +177,9 @@ impl AudioOutputSink {
 
     /// Called by the existing one-second Sendspin clock tick, never per PCM packet.
     pub fn refresh_output(&mut self) {
-        self.ensure_warm_output();
+        if self.stream_format.is_some() {
+            self.ensure_warm_output();
+        }
     }
 }
 

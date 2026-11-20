@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::events::{AppEvent, EventSender};
@@ -17,7 +17,19 @@ pub struct ShelfService {
     platform: Arc<dyn ShelfPlatform>,
     events: EventSender,
     items: Vec<ShelfItem>,
-    thumbnails: HashMap<Uuid, ShelfThumbnail>,
+    thumbnails: HashMap<Uuid, Thumbnail>,
+}
+
+struct Thumbnail {
+    revision: DateTime<Utc>,
+    pending: tokio::task::AbortHandle,
+    image: Option<ShelfThumbnail>,
+}
+
+impl Drop for Thumbnail {
+    fn drop(&mut self) {
+        self.pending.abort();
+    }
 }
 
 impl ShelfService {
@@ -31,21 +43,26 @@ impl ShelfService {
         if was_pruned {
             repository.save(&items)?;
         }
-        let service = Self {
+        Ok(Self {
             repository,
             platform,
             events,
             items,
             thumbnails: HashMap::new(),
-        };
-        service.spawn_all_thumbnails();
-        Ok(service)
+        })
     }
 
     pub fn entries(&self) -> Vec<ShelfEntry> {
         self.items
             .iter()
-            .map(|item| ShelfEntry::new(item.clone(), self.thumbnails.get(&item.id).cloned()))
+            .map(|item| {
+                let thumbnail = self
+                    .thumbnails
+                    .get(&item.id)
+                    .filter(|thumb| thumb.revision == item.added_at)
+                    .and_then(|thumb| thumb.image.clone());
+                ShelfEntry::new(item.clone(), thumbnail)
+            })
             .collect()
     }
 
@@ -134,15 +151,64 @@ impl ShelfService {
         (false, self.platform.open_path(&path))
     }
 
-    pub fn on_thumbnail_loaded(&mut self, id: Uuid, thumbnail: Option<ShelfThumbnail>) -> bool {
-        let Some(thumbnail) = thumbnail else {
-            return false;
-        };
-        if !self.items.iter().any(|item| item.id == id) {
-            return false;
+    pub fn on_thumbnail_loaded(
+        &mut self,
+        id: Uuid,
+        revision: DateTime<Utc>,
+        image: ShelfThumbnail,
+    ) -> bool {
+        if let Some(thumbnail) = self.thumbnails.get_mut(&id)
+            && thumbnail.revision == revision
+        {
+            thumbnail.image = Some(image);
+            true
+        } else {
+            false
         }
-        self.thumbnails.insert(id, thumbnail);
-        true
+    }
+
+    pub fn show_images(&mut self, visible: &[Uuid]) {
+        self.thumbnails.retain(|id, _| visible.contains(id));
+        for id in visible {
+            let Some(item) = self
+                .items
+                .iter()
+                .find(|item| item.id == *id && item.is_decodable_image())
+            else {
+                continue;
+            };
+            let revision = item.added_at;
+            if self
+                .thumbnails
+                .get(id)
+                .is_some_and(|thumb| thumb.revision == revision)
+            {
+                continue;
+            }
+            let Some(path) = item.path() else {
+                continue;
+            };
+            let future = self.platform.load_thumbnail(path.to_path_buf());
+            let events = self.events.clone();
+            let id = *id;
+            let pending = tokio::spawn(async move {
+                let thumbnail = future.await;
+                let _ = events.send(AppEvent::ShelfThumbnailLoaded {
+                    id,
+                    revision,
+                    thumbnail,
+                });
+            })
+            .abort_handle();
+            self.thumbnails.insert(
+                id,
+                Thumbnail {
+                    revision,
+                    pending,
+                    image: None,
+                },
+            );
+        }
     }
 
     pub fn request_file_picker(&self) {
@@ -184,34 +250,12 @@ impl ShelfService {
         }) {
             let mut existing = self.items.remove(index).with_refreshed_metadata(metadata);
             existing.added_at = Utc::now();
-            self.spawn_thumbnail_if_image(&existing);
             self.items.insert(0, existing);
             return true;
         }
         let item = ShelfItem::new(path.to_path_buf(), metadata, Utc::now());
-        self.spawn_thumbnail_if_image(&item);
         self.items.insert(0, item);
         true
-    }
-
-    fn spawn_all_thumbnails(&self) {
-        for item in &self.items {
-            self.spawn_thumbnail_if_image(item);
-        }
-    }
-
-    fn spawn_thumbnail_if_image(&self, item: &ShelfItem) {
-        if !item.is_decodable_image() {
-            return;
-        }
-        let id = item.id;
-        let Some(path) = item.path() else { return };
-        let future = self.platform.load_thumbnail(path.to_path_buf());
-        let events = self.events.clone();
-        tokio::spawn(async move {
-            let thumbnail = future.await;
-            let _ = events.send(AppEvent::ShelfThumbnailLoaded { id, thumbnail });
-        });
     }
 }
 

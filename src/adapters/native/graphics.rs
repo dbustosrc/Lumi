@@ -95,6 +95,7 @@ pub struct Surface {
     composition: Option<WindowComposition>,
     hwnd: HWND,
     bitmap: Option<ID2D1Bitmap1>,
+    motion_blur: Option<(ID2D1Bitmap1, ID2D1Effect)>,
     brush: ID2D1SolidColorBrush,
     gradients: HashMap<(u32, u32), ID2D1LinearGradientBrush>,
     width: u32,
@@ -105,6 +106,7 @@ pub struct Surface {
     images: HashMap<(usize, u32, u32), ID2D1Bitmap1>,
     used_images: HashSet<(usize, u32, u32)>,
     shell_mask: Option<ID2D1Geometry>,
+    shell_shape: Option<(Shell, bool)>,
     glass_mask: Option<(Shell, bool, f32)>,
 }
 impl Surface {
@@ -151,6 +153,7 @@ impl Surface {
                 composition: Some(composition),
                 hwnd,
                 bitmap: None,
+                motion_blur: None,
                 brush,
                 gradients: HashMap::new(),
                 width,
@@ -161,6 +164,7 @@ impl Surface {
                 images: HashMap::new(),
                 used_images: HashSet::new(),
                 shell_mask: None,
+                shell_shape: None,
                 glass_mask: None,
             };
             surface.bind_target()?;
@@ -198,6 +202,7 @@ impl Surface {
             }
             self.context.SetTarget(None);
             self.bitmap = None;
+            self.motion_blur = None;
             self.swap.ResizeBuffers(
                 2,
                 width,
@@ -306,6 +311,18 @@ impl Surface {
         }
     }
     pub fn styled_shell(&mut self, s: Shell, floating: bool, opacity: f32) -> Result<()> {
+        if self.shell_shape != Some((s, floating)) {
+            self.shell_mask = Some(self.shell_geometry(s, floating)?);
+            self.shell_shape = Some((s, floating));
+        }
+        self.tint(0, opacity);
+        if let Some(mask) = &self.shell_mask {
+            unsafe { self.context.FillGeometry(mask, &self.brush, None) };
+        }
+        self.sync_glass_clip(s, floating)
+    }
+
+    fn shell_geometry(&self, s: Shell, floating: bool) -> Result<ID2D1Geometry> {
         unsafe {
             let width = s.width.max(40.);
             let height = s.height.max(4.);
@@ -313,11 +330,11 @@ impl Surface {
             let x = (SURFACE_WIDTH - width) / 2.;
             if floating {
                 let body = rounded(Rect::new(x, 0., width, height), radius);
-                let geometry = self.device.factory.CreateRoundedRectangleGeometry(&body)?;
-                self.tint(0, opacity);
-                self.context.FillGeometry(&geometry, &self.brush, None);
-                self.shell_mask = Some(geometry.cast()?);
-                return self.sync_glass_clip(s, floating);
+                return self
+                    .device
+                    .factory
+                    .CreateRoundedRectangleGeometry(&body)?
+                    .cast();
             }
             let path = self.device.factory.CreatePathGeometry()?;
             let sink = path.Open()?;
@@ -353,10 +370,7 @@ impl Surface {
             ));
             sink.EndFigure(D2D1_FIGURE_END_CLOSED);
             sink.Close()?;
-            self.tint(0, opacity);
-            self.context.FillGeometry(&path, &self.brush, None);
-            self.shell_mask = Some(path.cast()?);
-            self.sync_glass_clip(s, floating)
+            path.cast()
         }
     }
     pub fn clip_shell(&self) -> Result<()> {
@@ -389,6 +403,72 @@ impl Surface {
         unsafe {
             self.brush.SetColor(&color(value, opacity));
         }
+    }
+    pub fn prepare_motion_blur(&mut self, commands: &[Paint], deviation: f32) -> Result<()> {
+        if deviation <= 0. {
+            self.motion_blur = None;
+            return Ok(());
+        }
+        unsafe {
+            if self.motion_blur.is_none() {
+                let bitmap = self.context.CreateBitmap(
+                    D2D_SIZE_U {
+                        width: self.width,
+                        height: self.height,
+                    },
+                    None,
+                    0,
+                    &D2D1_BITMAP_PROPERTIES1 {
+                        pixelFormat: D2D1_PIXEL_FORMAT {
+                            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                        },
+                        dpiX: 96. * self.scale,
+                        dpiY: 96. * self.scale,
+                        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+                        ..Default::default()
+                    },
+                )?;
+                let effect = self.context.CreateEffect(&CLSID_D2D1GaussianBlur)?;
+                effect.SetInput(0, &bitmap, true);
+                effect.SetValue(
+                    D2D1_GAUSSIANBLUR_PROP_BORDER_MODE.0 as u32,
+                    D2D1_PROPERTY_TYPE_ENUM,
+                    &D2D1_BORDER_MODE_HARD.0.to_ne_bytes(),
+                )?;
+                self.motion_blur = Some((bitmap, effect));
+            }
+            let (bitmap, effect) = self.motion_blur.as_ref().expect("blur target initialized");
+            effect.SetValue(
+                D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION.0 as u32,
+                D2D1_PROPERTY_TYPE_FLOAT,
+                &deviation.to_ne_bytes(),
+            )?;
+            let target = self.context.GetTarget()?;
+            self.context.SetTarget(bitmap);
+            self.context.Clear(None);
+            let result = self.paint(commands, 1., (0., 0.));
+            self.context.SetTarget(&target);
+            result
+        }
+    }
+
+    pub fn draw_motion_blur(&self, opacity: f32, offset: (f32, f32)) -> Result<()> {
+        if let Some((_, effect)) = &self.motion_blur {
+            unsafe {
+                let image = effect.GetOutput()?;
+                self.opacity_layer(opacity);
+                self.context.DrawImage(
+                    &image,
+                    Some(&point(offset.0, offset.1)),
+                    None,
+                    D2D1_INTERPOLATION_MODE_LINEAR,
+                    D2D1_COMPOSITE_MODE_SOURCE_OVER,
+                );
+                self.context.PopLayer();
+            }
+        }
+        Ok(())
     }
     pub fn paint(&mut self, commands: &[Paint], opacity: f32, offset: (f32, f32)) -> Result<()> {
         unsafe {

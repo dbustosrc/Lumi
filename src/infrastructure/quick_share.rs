@@ -13,6 +13,7 @@ use super::shelf_store::JsonShelfRepository;
 use crate::application::presenter::{NotchPresenter, ShelfEntry, ViewUpdate};
 use crate::application::quick_share::{Command, Device, Request, Snapshot, Tray};
 use crate::application::settings::{AppSettings, QuickShareSettings};
+use crate::domain::notch::NotchPage;
 use crate::domain::ports::{PortError, ShelfPlatform, ShelfRepository};
 use crate::domain::shelf::{ShelfItem, is_same_shelf_path};
 
@@ -115,12 +116,13 @@ pub async fn run(
             state.received_status = Some("quickShare.storageError");
         }
     }
+    let (mut enabled, policy) = share_policy(&settings.borrow_and_update());
     let mut service = Service {
         engine: None,
         directory,
         received,
         can_save_received,
-        policy: settings.borrow_and_update().quick_share.clone(),
+        policy,
         presenter,
         state,
         devices: BTreeMap::new(),
@@ -137,13 +139,19 @@ pub async fn run(
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
+                if !enabled { continue; }
                 service.command(command).await;
             }
             changed = settings.changed() => {
                 if changed.is_err() { break; }
-                let policy = settings.borrow_and_update().quick_share.clone();
-                if policy == service.policy { continue; }
+                let (next_enabled, policy) = share_policy(&settings.borrow_and_update());
+                if policy == service.policy && next_enabled == enabled { continue; }
+                enabled = next_enabled;
                 service.policy = policy;
+                if !enabled {
+                    service.command(Command::Discover(false)).await;
+                    if let Some(picker) = service.picker.take() { picker.abort(); }
+                }
                 service.apply_policy().await;
             }
             event = next_event(&mut service.engine) => {
@@ -171,6 +179,13 @@ pub async fn run(
     if let Some(mut engine) = service.engine {
         engine.service.stop().await;
     }
+}
+
+fn share_policy(settings: &AppSettings) -> (bool, QuickShareSettings) {
+    let enabled = settings.desktop.pages.contains(NotchPage::QuickShare);
+    let mut policy = settings.quick_share.clone();
+    policy.visible &= enabled;
+    (enabled, policy)
 }
 
 enum EngineEvent {

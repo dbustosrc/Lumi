@@ -27,6 +27,55 @@ const TASKS_PATH: &str = "/v1/tasks";
 const MAX_BODY: usize = 16 * 1024;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
+pub async fn serve_when_enabled(
+    mut initial: Option<tokio::net::TcpListener>,
+    tokens: Arc<TaskTokens>,
+    events: EventSender,
+    mut settings: tokio::sync::watch::Receiver<crate::application::settings::AppSettings>,
+) {
+    use crate::domain::notch::NotchPage;
+    loop {
+        if !settings
+            .borrow_and_update()
+            .desktop
+            .pages
+            .contains(NotchPage::Todo)
+        {
+            initial = None;
+            if settings.changed().await.is_err() {
+                return;
+            }
+            continue;
+        }
+        let listener = match initial.take() {
+            Some(listener) => listener,
+            None => match tokio::net::TcpListener::bind(ADDRESS).await {
+                Ok(listener) => listener,
+                Err(error) => {
+                    tracing::warn!(event = "log.taskApi.unavailable", %error);
+                    if settings.changed().await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+            },
+        };
+        tokio::select! {
+            () = serve(listener, tokens.clone(), events.clone()) => return,
+            () = async {
+                while settings.changed().await.is_ok() {
+                    if !settings.borrow_and_update().desktop.pages.contains(NotchPage::Todo) {
+                        return;
+                    }
+                }
+            } => {}
+        }
+        if settings.has_changed().is_err() {
+            return;
+        }
+    }
+}
+
 pub async fn serve(
     listener: tokio::net::TcpListener,
     tokens: Arc<TaskTokens>,
@@ -34,8 +83,13 @@ pub async fn serve(
 ) {
     let host = listener.local_addr().expect("bound listener").to_string();
     let slots = Arc::new(Semaphore::new(16));
+    let mut connections = tokio::task::JoinSet::new();
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
+        let accepted = tokio::select! {
+            accepted = listener.accept() => accepted,
+            _ = connections.join_next(), if !connections.is_empty() => continue,
+        };
+        let Ok((stream, _)) = accepted else {
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         };
@@ -43,7 +97,7 @@ pub async fn serve(
             continue;
         };
         let (tokens, events, host) = (tokens.clone(), events.clone(), host.clone());
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let _slot = slot;
             let service = service_fn(move |request| {
                 let (tokens, events, host) = (tokens.clone(), events.clone(), host.clone());

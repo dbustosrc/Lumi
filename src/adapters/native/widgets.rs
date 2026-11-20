@@ -163,7 +163,7 @@ fn draw(s: &mut Scene, r: Rect, widget: Widget, m: &UiModel, small: bool) {
                         day.is_today,
                         true,
                     );
-                    if !small && m.tasks.iter().any(|task| task.schedule.occurs_on(day.date)) {
+                    if !small && m.tasks_on(day.date) {
                         s.round(
                             Rect::new(cell.x + cell.w / 2. - 1., cell.y + cell.h, 2., 2.),
                             1.,
@@ -320,8 +320,10 @@ fn city_time(city: usize, utc: DateTime<Utc>) -> Option<String> {
                 .position(|&c| c == 0)
                 .unwrap_or(zone.TimeZoneKeyName.len());
             let key = String::from_utf16_lossy(&zone.TimeZoneKeyName[..end]);
-            if let Some(i) = CITIES.iter().position(|city| city.zone == key) {
-                zones[i] = Some(zone);
+            for (i, city) in CITIES.iter().enumerate() {
+                if city.zone == key {
+                    zones[i] = Some(zone);
+                }
             }
         }
         zones

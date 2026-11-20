@@ -1,4 +1,4 @@
-use super::{TASKS_PATH, serve};
+use super::{TASKS_PATH, serve, serve_when_enabled};
 
 use std::{
     fs,
@@ -9,14 +9,16 @@ use std::{
 use crate::{
     application::{
         events::{AppEvent, EventReceiver, create_event_channel},
+        settings::AppSettings,
         todo_service::TodoService,
     },
+    domain::notch::NotchPage,
     domain::ports::TaskRepository,
     infrastructure::{task_store::JsonTaskRepository, task_tokens::TaskTokens},
 };
 use reqwest::{Client, Method, RequestBuilder, StatusCode};
 use serde_json::{Value, json};
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::{net::{TcpListener, TcpStream}, task::JoinHandle};
 use uuid::Uuid;
 
 struct TempDirectory(PathBuf);
@@ -154,6 +156,45 @@ async fn task_api_authentication_and_token_storage_use_only_persisted_digests() 
 
     let revoked = api.request(Method::GET, TASKS_PATH).send().await.unwrap();
     assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn task_api_stops_listening_when_the_todo_page_is_disabled() {
+    let directory = TempDirectory::new();
+    let tokens = Arc::new(TaskTokens::load(directory.path().join("tokens.json")).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let settings = AppSettings::default();
+    let (settings_tx, settings_rx) = tokio::sync::watch::channel(settings.clone());
+    let (events, _receiver) = create_event_channel();
+    let api = tokio::spawn(serve_when_enabled(
+        Some(listener),
+        tokens,
+        events,
+        settings_rx,
+    ));
+
+    drop(TcpStream::connect(address).await.unwrap());
+    let mut disabled = settings;
+    disabled.desktop.pages.toggle(NotchPage::Todo);
+    settings_tx.send_replace(disabled);
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if TcpStream::connect(address).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Task API listener should close when Todo is hidden");
+
+    drop(settings_tx);
+    tokio::time::timeout(std::time::Duration::from_secs(1), api)
+        .await
+        .expect("Task API should stop when settings are dropped")
+        .unwrap();
 }
 
 #[tokio::test]

@@ -30,7 +30,10 @@ pub enum NotchView {
 }
 
 /// Pages reachable while the notch is expanded (page dots & loop arrows order).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum NotchPage {
     #[default]
     Music,
@@ -57,29 +60,6 @@ impl NotchPage {
         NotchPage::Widgets,
     ];
 
-    pub fn index(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|page| *page == self)
-            .unwrap_or_default()
-    }
-
-    pub fn available(widgets_enabled: bool) -> &'static [Self] {
-        &Self::ALL[..Self::ALL.len() - usize::from(!widgets_enabled)]
-    }
-
-    pub fn step(self, direction: isize, widgets_enabled: bool) -> Self {
-        let pages = Self::available(widgets_enabled);
-        if self == Self::Widgets && !widgets_enabled {
-            return if direction < 0 {
-                Self::Charging
-            } else {
-                Self::Music
-            };
-        }
-        pages[(self.index() as isize + direction).rem_euclid(pages.len() as isize) as usize]
-    }
-
     pub fn view(self) -> NotchView {
         match self {
             Self::Music => NotchView::Music,
@@ -91,6 +71,71 @@ impl NotchPage {
             Self::Pomodoro => NotchView::Pomodoro,
             Self::Water => NotchView::Water,
             Self::Widgets => NotchView::Widgets,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct PageOrder(Vec<NotchPage>);
+
+impl Default for PageOrder {
+    fn default() -> Self {
+        Self(
+            NotchPage::ALL
+                .into_iter()
+                .filter(|page| *page != NotchPage::Widgets)
+                .collect(),
+        )
+    }
+}
+
+impl PageOrder {
+    pub fn enabled(&self) -> &[NotchPage] {
+        &self.0
+    }
+
+    pub fn contains(&self, page: NotchPage) -> bool {
+        self.0.contains(&page)
+    }
+
+    pub fn valid(&self) -> bool {
+        self.0
+            .iter()
+            .enumerate()
+            .all(|(i, page)| !self.0[..i].contains(page))
+    }
+
+    pub fn toggle(&mut self, page: NotchPage) {
+        if let Some(index) = self.0.iter().position(|item| *item == page) {
+            self.0.remove(index);
+        } else {
+            self.0.push(page);
+        }
+    }
+
+    pub fn move_page(&mut self, page: NotchPage, target: NotchPage) -> bool {
+        let indices = self
+            .0
+            .iter()
+            .position(|item| *item == page)
+            .zip(self.0.iter().position(|item| *item == target));
+        let Some((from, to)) = indices.filter(|(from, to)| from != to) else {
+            return false;
+        };
+        let page = self.0.remove(from);
+        self.0.insert(to, page);
+        true
+    }
+
+    pub fn step(&self, current: NotchPage, direction: isize) -> Option<NotchPage> {
+        let index = self.0.iter().position(|page| *page == current);
+        if let Some(index) = index {
+            Some(self.0[(index as isize + direction).rem_euclid(self.0.len() as isize) as usize])
+        } else if direction < 0 {
+            self.0.last().copied()
+        } else {
+            self.0.first().copied()
         }
     }
 }
@@ -115,6 +160,7 @@ pub struct NotchContext {
     /// Active voice recording or transcription session.
     pub is_voice_busy: bool,
     pub page: NotchPage,
+    pub no_pages: bool,
     pub is_lyrics_mode: bool,
     pub has_lyrics: bool,
     pub is_playing: bool,
@@ -155,7 +201,7 @@ pub fn resolve_view(context: &NotchContext) -> NotchView {
             Peek::Hud => NotchView::Hud,
         };
     }
-    if is_open {
+    if is_open && !context.no_pages {
         return if context.page == NotchPage::Music && context.is_lyrics_mode {
             NotchView::Lyrics
         } else {

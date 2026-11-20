@@ -12,13 +12,14 @@ use crate::application::settings::{AppSettings, LanguagePreference};
 use crate::domain::calendar::calendar_grid;
 use crate::domain::device::{HeadphoneStatus, PowerStatus};
 use crate::domain::media::{Artwork, MediaConnection, Track};
-use crate::domain::notch::NotchView;
+use crate::domain::notch::{NotchPage, NotchView};
 use crate::domain::shelf::{ShelfContent, ShelfItem, ShelfItemKind};
 use crate::domain::todo::{TaskColor, TaskSchedule, TodoProgress, TodoTask};
 use crate::domain::water::WaterState;
-use crate::domain::widgets::{StatusRing, Widget};
+use crate::domain::widgets::{CITIES, StatusRing, Widget};
 use chrono::{Local, NaiveTime, TimeZone, Utc};
 use image::RgbaImage;
+use std::collections::HashSet;
 use std::error::Error;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -31,6 +32,7 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Time::{DYNAMIC_TIME_ZONE_INFORMATION, EnumDynamicTimeZoneInformation};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, IsWindowVisible, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
     WS_EX_TOOLWINDOW, WS_POPUP,
@@ -55,6 +57,158 @@ impl Drop for ComApartment {
         // SAFETY: balances the successful CoInitializeEx on this test thread.
         unsafe { CoUninitialize() };
     }
+}
+
+#[test]
+fn every_world_clock_city_uses_a_windows_dynamic_time_zone() {
+    let mut zones = HashSet::new();
+    for index in 0.. {
+        let mut zone = DYNAMIC_TIME_ZONE_INFORMATION::default();
+        if unsafe { EnumDynamicTimeZoneInformation(index, &mut zone) } != 0 {
+            break;
+        }
+        let end = zone
+            .TimeZoneKeyName
+            .iter()
+            .position(|&character| character == 0)
+            .unwrap_or(zone.TimeZoneKeyName.len());
+        zones.insert(String::from_utf16_lossy(&zone.TimeZoneKeyName[..end]));
+    }
+
+    for city in CITIES {
+        assert!(
+            zones.contains(city.zone),
+            "{} references unavailable Windows zone {}",
+            city.name,
+            city.zone
+        );
+    }
+}
+
+#[test]
+fn page_settings_scenes_fit_the_window_with_pages_enabled_or_empty() {
+    const WIDTH: f32 = 654.;
+    const HEIGHT: f32 = 506.;
+    let now = Instant::now();
+    let model = UiModel::new(AppSettings::default());
+
+    let mut appearance = settings::SettingsUi::new(&model.settings, true);
+    appearance.section = 2;
+    appearance.changed = now - Duration::from_secs(1);
+    let (appearance_scene, _) =
+        settings::settings_scene(&model, &appearance, &[], WIDTH, HEIGHT, now);
+    assert_scene_fits(&appearance_scene, WIDTH, HEIGHT);
+
+    let mut pages = settings::SettingsUi::new(&model.settings, true);
+    pages.section = 15;
+    pages.changed = now - Duration::from_secs(1);
+    let (pages_scene, _) = settings::settings_scene(&model, &pages, &[], WIDTH, HEIGHT, now);
+    assert_scene_fits(&pages_scene, WIDTH, HEIGHT);
+
+    let mut empty_model = UiModel::new(AppSettings::default());
+    for page in empty_model.settings.desktop.pages.enabled().to_vec() {
+        empty_model.settings.desktop.pages.toggle(page);
+    }
+    let (empty_pages_scene, _) =
+        settings::settings_scene(&empty_model, &pages, &[], WIDTH, HEIGHT, now);
+    assert_scene_fits(&empty_pages_scene, WIDTH, HEIGHT);
+}
+
+#[test]
+fn settings_about_footer_stays_fixed_at_the_minimum_window_height() {
+    const WIDTH: f32 = 654.;
+    let height = settings::SETTINGS_MIN_HEIGHT;
+    assert_eq!(height, 499.);
+    let mut model = UiModel::new(AppSettings::default());
+    model.settings.desktop.pages.toggle(NotchPage::Widgets);
+    let mut ui = settings::SettingsUi::new(&model.settings, true);
+    ui.section = 10;
+    ui.changed = Instant::now() - Duration::from_secs(1);
+    let (scene, _) = settings::settings_scene(&model, &ui, &[], WIDTH, height, Instant::now());
+    assert_scene_fits(&scene, WIDTH, height);
+
+    let about = scene
+        .hits
+        .iter()
+        .find(|hit| hit.action == Action::Section(10))
+        .unwrap();
+    assert_eq!(about.rect.y, height - 44.);
+    let footer_y = height - 52.;
+    assert!(scene.paint.iter().any(|paint| matches!(
+        paint,
+        Paint::Line(x, y, x2, _, color, width)
+            if *x == 10. && *y == footer_y && *x2 == 182. && *color == 0x2c2c30 && *width == 1.
+    )));
+    assert!(scene
+        .hits
+        .iter()
+        .filter(|hit| matches!(hit.action, Action::Section(section) if section != 10))
+        .all(|hit| hit.rect.y + hit.rect.h <= footer_y));
+
+    let (taller, _) = settings::settings_scene(&model, &ui, &[], WIDTH, height + 80., Instant::now());
+    let taller_about = taller
+        .hits
+        .iter()
+        .find(|hit| hit.action == Action::Section(10))
+        .unwrap();
+    assert_eq!(taller_about.rect.y, about.rect.y + 80.);
+}
+
+#[test]
+fn native_motion_blur_spreads_pixels_beyond_the_sharp_shape()
+-> std::result::Result<(), Box<dyn Error>> {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
+    let _com = ComApartment;
+    let module = unsafe { GetModuleHandleW(None)? };
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW,
+            w!("STATIC"),
+            w!("Lumi motion blur fixture"),
+            WS_POPUP,
+            0,
+            0,
+            64,
+            64,
+            None,
+            None,
+            Some(module.into()),
+            None,
+        )?
+    };
+    let _window = HiddenWindow(hwnd);
+    let device = crate::adapters::native::graphics::GraphicsDevice::new()?;
+    let mut surface = Surface::new(device, hwnd, 64, 64, 1.0)?;
+    let shape = [Paint::Round(Rect::new(24., 24., 16., 16.), 0., 0xffffff)];
+
+    surface.begin(Some(0));
+    surface.prepare_motion_blur(&shape, 4.)?;
+    surface.draw_motion_blur(0.6, (0., 0.))?;
+    let blurred = readback(&surface)?;
+    surface.end()?;
+
+    surface.begin(Some(0));
+    surface.paint(&shape, 0.6, (0., 0.))?;
+    let sharp = readback(&surface)?;
+    surface.end()?;
+
+    let edge_energy = |image: &RgbaImage| {
+        image
+            .pixels()
+            .enumerate()
+            .filter(|(index, _)| {
+                let x = *index as u32 % 64;
+                let y = *index as u32 / 64;
+                (18..24).contains(&x) && (24..40).contains(&y)
+            })
+            .map(|(_, pixel)| u64::from(pixel.0[0]))
+            .sum::<u64>()
+    };
+    assert_eq!(edge_energy(&sharp), 0);
+    assert!(edge_energy(&blurred) > 0);
+    assert!(sharp.get_pixel(32, 32).0[0] > 0);
+    assert!(blurred.get_pixel(32, 32).0[0] > 0);
+    Ok(())
 }
 
 struct LocaleGuard(crate::i18n::Locale);
@@ -546,12 +700,12 @@ fn native_scenes_render_review_captures_without_showing_a_window()
     assert_focus_spinbox_hit_layout(&model, now);
     for (name, section) in [
         ("general-en-100.png", 0),
-        ("calendar-en-100.png", 5),
+        ("calendar-en-100.png", 4),
         ("focus-en-100.png", 6),
         ("water-en-100.png", 7),
     ] {
         model.settings.language = LanguagePreference::English;
-        if section == 5 {
+        if section == 4 {
             model.clock = Local.with_ymd_and_hms(2026, 11, 2, 11, 30, 0).unwrap();
             model.calendar = calendar_grid(model.clock.date_naive(), 0, false, false);
             model.selected_date.clear();
@@ -565,7 +719,7 @@ fn native_scenes_render_review_captures_without_showing_a_window()
             1.0,
             output.join("settings").join(name),
         )?;
-        if section == 5 {
+        if section == 4 {
             model.clock = Local.with_ymd_and_hms(2026, 11, 3, 10, 30, 0).unwrap();
             model.calendar = calendar_grid(model.clock.date_naive(), 0, false, false);
             model.selected_date = "2026-11-03".into();
@@ -589,7 +743,7 @@ fn native_scenes_render_review_captures_without_showing_a_window()
     render_settings(
         &mut surface,
         &model,
-        12,
+        1,
         now,
         1.0,
         output.join("settings").join("status-ring-en-100.png"),
@@ -616,7 +770,7 @@ fn native_scenes_render_review_captures_without_showing_a_window()
         output.join("notch").join("music-floating-shell-100.png"),
     )?;
 
-    model.settings.desktop.widgets.enabled = true;
+    model.settings.desktop.pages.toggle(NotchPage::Widgets);
     model.settings.desktop.widgets.left = Widget::WorldClock;
     model.settings.desktop.widgets.right = Widget::Countdown;
     render_settings(

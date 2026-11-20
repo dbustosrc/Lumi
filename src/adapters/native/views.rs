@@ -116,7 +116,7 @@ pub fn notch_scene(m: &UiModel, view: NotchView, now: Instant) -> Scene {
             }
         }
         NotchView::Hud => hud(&mut s, m, b, now),
-        NotchView::FileDrop => draw_file_drop(&mut s, b, m.file_drop_destination),
+        NotchView::FileDrop => draw_file_drop(&mut s, b, m),
         NotchView::ChargingPeek | NotchView::HeadphonesPeek => {
             device_page(&mut s, m, b, view, true, now)
         }
@@ -234,24 +234,26 @@ fn header(s: &mut Scene, m: &UiModel, b: Rect) {
         );
     }
 }
+pub(super) fn page_appearance(page: NotchPage) -> (&'static str, &'static str, u32) {
+    match page {
+        NotchPage::Music => (MUSIC, "nav-music", 0xff3d68),
+        NotchPage::Pomodoro => (TIMER, "nav-pomodoro", 0xe6e6ea),
+        NotchPage::Water => (DROP, "nav-water", 0x36baff),
+        NotchPage::Shelf => (SHELF, "nav-shelf", 0xffb026),
+        NotchPage::QuickShare => ("quick-share-radar", "nav-quick-share", 0x4385f5),
+        NotchPage::Todo => (TODO, "nav-todo", 0x38d36f),
+        NotchPage::Headphones => ("\u{e7f6}", "headset", 0x66aaff),
+        NotchPage::Charging => ("\u{e850}", "battery", 0x3be666),
+        NotchPage::Widgets => (super::widgets::WIDGETS_ICON, "nav-widgets", 0x63b3ff),
+    }
+}
 fn navigation(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
-    let selected = page_index(m.view);
-    let pages = NotchPage::available(m.settings.desktop.widgets.enabled);
-    let icons = [
-        (MUSIC, "nav-music", 0xff3d68),
-        (TIMER, "nav-pomodoro", 0xe6e6ea),
-        (DROP, "nav-water", 0x36baff),
-        (SHELF, "nav-shelf", 0xffb026),
-        ("quick-share-radar", "nav-quick-share", 0x4385f5),
-        (TODO, "nav-todo", 0x38d36f),
-        ("\u{e7f6}", "headset", 0x66aaff),
-        ("\u{e850}", "battery", 0x3be666),
-        (super::widgets::WIDGETS_ICON, "nav-widgets", 0x63b3ff),
-    ];
+    let pages = m.settings.desktop.pages.enabled();
+    let selected = page_index(m.view, pages);
     let amount = m.nav_amount(now);
     let slots = pages.len() + 1;
-    let width = COLLAPSED_NAV_WIDTH
-        + (expanded_nav_width(m.settings.desktop.widgets.enabled) - COLLAPSED_NAV_WIDTH) * amount;
+    let width =
+        COLLAPSED_NAV_WIDTH + (expanded_nav_width(pages.len()) - COLLAPSED_NAV_WIDTH) * amount;
     let x = b.x + (b.w - width) / 2.;
     let y = 132. + 6. * amount;
     let height = 6. + 18. * amount;
@@ -268,7 +270,7 @@ fn navigation(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
         {
             let (glyph, label, color) = page
                 .map_or(("page-settings", "nav-general", 0x99999e), |p| {
-                    icons[p.index()]
+                    page_appearance(*p)
                 });
             let cx = x + 8. + (i as f32 + 0.5) * slot;
             let tint = if selected == Some(i) { color } else { 0x99999e };
@@ -309,7 +311,7 @@ fn navigation(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
                 s.hit(
                     Rect::new(dx - 2., 127., w + 4., 16.),
                     Action::Intent(UserIntent::ShowPage(page)),
-                    tr(icons[page.index()].1),
+                    tr(page_appearance(page).1),
                 );
             }
             dx += w + 4.;
@@ -1538,7 +1540,7 @@ pub fn draw_calendar(s: &mut Scene, m: &UiModel, r: Rect, compact: bool) {
             },
             true,
         );
-        if m.tasks.iter().any(|t| t.schedule.occurs_on(day.date)) {
+        if m.tasks_on(day.date) {
             let d = if compact { 2. } else { 3. };
             s.round(
                 Rect::new(
@@ -1836,17 +1838,41 @@ pub(super) fn file_drop_zones(body: Rect) -> [(FileDropDestination, Rect); 2] {
     ]
 }
 
-fn draw_file_drop(scene: &mut Scene, body: Rect, active: Option<FileDropDestination>) {
+pub(super) fn enabled_file_drop_zones(
+    body: Rect,
+    pages: &crate::domain::notch::PageOrder,
+) -> [Option<(FileDropDestination, Rect)>; 2] {
+    let shelf = pages.contains(NotchPage::Shelf);
+    let share = pages.contains(NotchPage::QuickShare);
+    file_drop_zones(body).map(|(destination, mut rect)| {
+        let enabled = match destination {
+            FileDropDestination::Shelf => shelf,
+            FileDropDestination::QuickShare => share,
+        };
+        if enabled && shelf != share {
+            rect.x = body.x + 42.;
+            rect.w = body.w - 84.;
+        }
+        enabled.then_some((destination, rect))
+    })
+}
+
+fn draw_file_drop(scene: &mut Scene, body: Rect, model: &UiModel) {
+    let zones = enabled_file_drop_zones(body, &model.settings.desktop.pages);
     scene.text(
         Rect::new(body.x, 8., body.w, 21.),
-        full("notch.shelf.chooseDestination"),
+        full(if zones.iter().all(Option::is_some) {
+            "notch.shelf.chooseDestination"
+        } else {
+            "notch.shelf.dropTitle"
+        }),
         13.,
         WHITE,
         true,
         true,
     );
-    for (destination, area) in file_drop_zones(body) {
-        let selected = Some(destination) == active;
+    for (destination, area) in zones.into_iter().flatten() {
+        let selected = Some(destination) == model.file_drop_destination;
         let color = if selected { BLUE } else { WHITE };
         scene.alpha_round(area, 14., color, if selected { 0.25 } else { 0.12 });
         scene.alpha_border(area, 14., color, 1., if selected { 0.95 } else { 0.23 });

@@ -4,11 +4,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::domain::{
+    notch::{NotchPage, PageOrder},
     ports::PortError,
     widgets::{CITIES, StatusRing, Widget},
 };
 
-pub const SETTINGS_SCHEMA_VERSION: u32 = 7;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,6 +149,7 @@ pub struct DesktopSettings {
     pub status_ring: StatusRing,
     pub appearance: NotchAppearance,
     pub widgets: WidgetSettings,
+    pub pages: PageOrder,
 }
 impl Default for DesktopSettings {
     fn default() -> Self {
@@ -172,6 +174,7 @@ impl Default for DesktopSettings {
             status_ring: StatusRing::default(),
             appearance: NotchAppearance::default(),
             widgets: WidgetSettings::default(),
+            pages: PageOrder::default(),
         }
     }
 }
@@ -181,6 +184,7 @@ pub struct NotchAppearance {
     pub floating: bool,
     pub glass: bool,
     pub tint_percent: u16,
+    pub motion_blur: bool,
 }
 impl Default for NotchAppearance {
     fn default() -> Self {
@@ -188,6 +192,7 @@ impl Default for NotchAppearance {
             floating: false,
             glass: false,
             tint_percent: 40,
+            motion_blur: false,
         }
     }
 }
@@ -195,7 +200,6 @@ impl Default for NotchAppearance {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WidgetSettings {
-    pub enabled: bool,
     pub left: Widget,
     pub right: Widget,
     pub first_city: u16,
@@ -206,7 +210,6 @@ pub struct WidgetSettings {
 impl Default for WidgetSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
             left: Widget::Week,
             right: Widget::Water,
             first_city: 0,
@@ -247,6 +250,12 @@ impl Default for ReminderSettings {
 }
 
 impl AppSettings {
+    pub fn active_music_assistant(&self) -> MusicAssistantSettings {
+        let mut config = self.music_assistant.clone();
+        config.is_enabled &= self.desktop.pages.contains(NotchPage::Music);
+        config
+    }
+
     pub fn validate(&self) -> Result<(), PortError> {
         if self.schema_version != SETTINGS_SCHEMA_VERSION {
             return Err(PortError::new(
@@ -295,6 +304,12 @@ impl AppSettings {
             return Err(PortError::new(
                 "settings.status.invalidNumber",
                 "invalid size, time or port",
+            ));
+        }
+        if !self.desktop.pages.valid() {
+            return Err(PortError::new(
+                "settings.error.parse",
+                "duplicate notch page",
             ));
         }
         let widgets = &self.desktop.widgets;

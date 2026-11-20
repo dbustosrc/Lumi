@@ -2,7 +2,7 @@
 #![allow(non_upper_case_globals)] // Windows bindings expose UIA constants in PascalCase.
 use super::host::WM_ACCESSIBLE_ACTION;
 use super::model::{Rect, UiModel};
-use super::scene::{Action, Hit, Paint, Scene};
+use super::scene::{Action, Hit, Paint, Scene, TextSpan};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -27,6 +27,7 @@ struct Snapshot {
     hwnd: isize,
     title: String,
     bounds: Rect,
+    scale: f32,
     nodes: Vec<Node>,
     focused: Option<u64>,
     alive: bool,
@@ -41,6 +42,67 @@ pub struct AccessibleWindow {
     snapshot: Mutex<Snapshot>,
     commands: Mutex<VecDeque<Command>>,
 }
+
+enum AccessPaint<'a> {
+    Clip(Rect),
+    Unclip,
+    Text(Rect, &'a str),
+    Run(Rect, &'a [TextSpan]),
+}
+
+impl PartialEq for AccessPaint<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Clip(a), Self::Clip(b)) => a == b,
+            (Self::Unclip, Self::Unclip) => true,
+            (Self::Text(a, text), Self::Text(b, other)) => a == b && text == other,
+            (Self::Run(a, text), Self::Run(b, other)) => {
+                a == b
+                    && text
+                        .iter()
+                        .map(|span| &span.text)
+                        .eq(other.iter().map(|span| &span.text))
+            }
+            _ => false,
+        }
+    }
+}
+
+fn accessible_paints(scene: &Scene) -> impl Iterator<Item = AccessPaint<'_>> {
+    scene.paint.iter().filter_map(|paint| match paint {
+        Paint::Clip(rect) => Some(AccessPaint::Clip(*rect)),
+        Paint::Unclip => Some(AccessPaint::Unclip),
+        Paint::Text(rect, text, ..)
+        | Paint::Paragraph(rect, text, ..)
+        | Paint::ButtonContent(rect, text, ..) => Some(AccessPaint::Text(*rect, text)),
+        Paint::TextRun(rect, spans, ..) => Some(AccessPaint::Run(*rect, spans)),
+        _ => None,
+    })
+}
+
+fn control_state(hit: &Hit, model: &UiModel) -> (Option<f64>, Option<bool>) {
+    let value = match hit.action {
+        Action::Volume => Some(f64::from(model.volume)),
+        Action::Seek => Some(if model.duration.is_zero() {
+            0.
+        } else {
+            model.position.as_secs_f64() / model.duration.as_secs_f64()
+        }),
+        _ => None,
+    };
+    let toggle = match &hit.action {
+        Action::Preference(key, _) if key.is_boolean() => Some(key.value(&model.settings) != 0),
+        Action::ToggleWater => Some(model.settings.water.enabled),
+        Action::TogglePage(page) => Some(model.settings.desktop.pages.contains(*page)),
+        Action::Daily => model.draft.as_ref().map(|d| d.daily),
+        Action::Intent(crate::application::events::UserIntent::ToggleTask(id)) => {
+            model.tasks.iter().find(|t| t.id == *id).map(|t| t.is_done)
+        }
+        _ => None,
+    };
+    (value, toggle)
+}
+
 thread_local! {static ROOTS:RefCell<HashMap<isize,IRawElementProviderSimple>>=RefCell::new(HashMap::new());}
 impl AccessibleWindow {
     pub fn new(hwnd: HWND, title: &str) -> Arc<Self> {
@@ -49,6 +111,7 @@ impl AccessibleWindow {
                 hwnd: hwnd.0 as isize,
                 title: title.into(),
                 bounds: Rect::new(0., 0., 0., 0.),
+                scale: 0.,
                 nodes: vec![],
                 focused: None,
                 alive: true,
@@ -66,19 +129,34 @@ impl AccessibleWindow {
         });
         access
     }
-    pub fn update(&self, scene: &Scene, model: &UiModel, scale: f32) {
+    pub fn update(&self, scene: &Scene, previous: &Scene, model: &UiModel, scale: f32) {
         let mut snapshot = self.snapshot.lock().expect("accessibility state poisoned");
         let hwnd = HWND(snapshot.hwnd as *mut _);
         let mut window = windows::Win32::Foundation::RECT::default();
         if unsafe { GetWindowRect(hwnd, &mut window) }.is_err() {
             return;
         }
-        snapshot.bounds = Rect::new(
+        let bounds = Rect::new(
             window.left as f32,
             window.top as f32,
             (window.right - window.left) as f32,
             (window.bottom - window.top) as f32,
         );
+        if snapshot.bounds == bounds
+            && snapshot.scale == scale
+            && scene.hits == previous.hits
+            && snapshot.nodes.len() >= scene.hits.len()
+            && scene
+                .hits
+                .iter()
+                .zip(&snapshot.nodes)
+                .all(|(hit, node)| control_state(hit, model) == (node.value, node.toggle))
+            && accessible_paints(scene).eq(accessible_paints(previous))
+        {
+            return;
+        }
+        snapshot.bounds = bounds;
+        snapshot.scale = scale;
         let mut occurrences = HashMap::new();
         snapshot.nodes = scene
             .hits
@@ -101,26 +179,7 @@ impl AccessibleWindow {
                     r.w * scale,
                     r.h * scale,
                 );
-                let value = match hit.action {
-                    Action::Volume => Some(f64::from(model.volume)),
-                    Action::Seek => Some(if model.duration.is_zero() {
-                        0.
-                    } else {
-                        model.position.as_secs_f64() / model.duration.as_secs_f64()
-                    }),
-                    _ => None,
-                };
-                let toggle = match &hit.action {
-                    Action::Preference(key, _) if key.is_boolean() => {
-                        Some(key.value(&model.settings) != 0)
-                    }
-                    Action::ToggleWater => Some(model.settings.water.enabled),
-                    Action::Daily => model.draft.as_ref().map(|d| d.daily),
-                    Action::Intent(crate::application::events::UserIntent::ToggleTask(id)) => {
-                        model.tasks.iter().find(|t| t.id == *id).map(|t| t.is_done)
-                    }
-                    _ => None,
-                };
+                let (value, toggle) = control_state(hit, model);
                 Node {
                     id,
                     hit: hit.clone(),
@@ -131,29 +190,25 @@ impl AccessibleWindow {
             })
             .collect();
         let mut clips = Vec::new();
-        for (ordinal, paint) in scene.paint.iter().enumerate() {
+        for (ordinal, paint) in accessible_paints(scene).enumerate() {
             let (rect, text) = match paint {
-                Paint::Clip(rect) => {
-                    clips.push(*rect);
+                AccessPaint::Clip(rect) => {
+                    clips.push(rect);
                     continue;
                 }
-                Paint::Unclip => {
+                AccessPaint::Unclip => {
                     clips.pop();
                     continue;
                 }
-                Paint::Text(rect, text, ..) | Paint::Paragraph(rect, text, ..) => {
-                    (*rect, text.clone())
-                }
-                Paint::TextRun(rect, spans, ..) => (
-                    *rect,
+                AccessPaint::Text(rect, text) => (rect, text.to_owned()),
+                AccessPaint::Run(rect, spans) => (
+                    rect,
                     spans
                         .iter()
                         .map(|span| span.text.as_str())
                         .collect::<Vec<_>>()
                         .join(" "),
                 ),
-                Paint::ButtonContent(rect, text, ..) => (*rect, text.clone()),
-                _ => continue,
             };
             let rect = clips.iter().fold(rect, |r, c| r.intersect(*c));
             if text.trim().is_empty()
@@ -185,6 +240,7 @@ impl AccessibleWindow {
             });
         }
     }
+
     pub fn take(&self) -> Vec<Command> {
         self.commands
             .lock()
@@ -201,10 +257,12 @@ impl AccessibleWindow {
             .map(|n| n.hit.action.clone())
     }
     pub fn set_visible(&self, visible: bool) {
-        self.snapshot
-            .lock()
-            .expect("accessibility state poisoned")
-            .visible = visible;
+        let mut snapshot = self.snapshot.lock().expect("accessibility state poisoned");
+        snapshot.visible = visible;
+        if !visible {
+            snapshot.nodes = Vec::new();
+            snapshot.scale = 0.;
+        }
     }
     pub fn focusable(&self) -> Vec<(u64, Rect)> {
         self.snapshot

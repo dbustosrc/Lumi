@@ -1,11 +1,11 @@
-use super::model::{Rect, UiModel, tr};
+use super::model::{Rect, UiModel, cubic_bezier, tr};
 use super::notices::COMPONENTS;
 use super::scene::{Action, Field, Paint, Preference, Scene};
 use super::views;
 use crate::application::settings::{AppSettings, LanguagePreference};
 use crate::domain::ports::PortError;
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub struct Display {
@@ -15,6 +15,36 @@ pub struct Display {
     pub work: Rect,
     pub scale: f32,
     pub primary: bool,
+}
+
+pub(super) fn display_map(displays: &[Display], area: Rect) -> Vec<(&Display, Rect)> {
+    let Some(bounds) = displays.iter().map(|display| display.rect).reduce(|a, b| {
+        let left = a.x.min(b.x);
+        let top = a.y.min(b.y);
+        let right = (a.x + a.w).max(b.x + b.w);
+        let bottom = (a.y + a.h).max(b.y + b.h);
+        Rect::new(left, top, right - left, bottom - top)
+    }) else {
+        return Vec::new();
+    };
+    let scale = (area.w / bounds.w).min(area.h / bounds.h);
+    let left = area.x + (area.w - bounds.w * scale) / 2.;
+    let top = area.y + (area.h - bounds.h * scale) / 2.;
+    displays
+        .iter()
+        .map(|display| {
+            let r = display.rect;
+            (
+                display,
+                Rect::new(
+                    left + (r.x - bounds.x) * scale,
+                    top + (r.y - bounds.y) * scale,
+                    r.w * scale,
+                    r.h * scale,
+                ),
+            )
+        })
+        .collect()
 }
 
 pub struct SettingsScrollbar {
@@ -64,12 +94,47 @@ pub enum NoticesPage {
     Component { index: usize, index_scroll: f32 },
 }
 
+use crate::domain::notch::{NotchPage, PageOrder};
 use crate::domain::widgets::{CITIES, StatusRing, Widget};
 
 const ABOUT: usize = 10;
-const STATUS_RING: usize = 12;
 const WIDGETS: usize = 13;
 const QUICK_SHARE: usize = 14;
+pub(super) const PAGES: usize = 15;
+const NAV_TOP: f32 = 44.;
+const NAV_STEP: f32 = 31.;
+const NAV_ROW_HEIGHT: f32 = 30.;
+const NAV_FOOTER: f32 = 52.;
+const NAV_SECTIONS: [usize; 13] = [0, 1, PAGES, 2, 3, WIDGETS, 4, 6, 7, 8, QUICK_SHARE, 9, 11];
+pub(super) const SETTINGS_MIN_HEIGHT: f32 =
+    NAV_TOP + NAV_SECTIONS.len() as f32 * NAV_STEP + NAV_FOOTER;
+const SWITCH_DURATION: Duration = Duration::from_millis(175);
+const PAGE_ROW_HEIGHT: f32 = 32.;
+const PAGE_SLIDE_DURATION: Duration = Duration::from_millis(160);
+
+struct SwitchMotion {
+    key: Action,
+    from: f32,
+    to: f32,
+    started: Instant,
+}
+
+struct PageSlide {
+    page: NotchPage,
+    from: f32,
+    to: f32,
+    started: Instant,
+    duration: Duration,
+}
+
+impl PageSlide {
+    fn position(&self, now: Instant) -> f32 {
+        let t = (now.saturating_duration_since(self.started).as_secs_f32()
+            / self.duration.as_secs_f32())
+        .min(1.);
+        self.from + (self.to - self.from) * (1. - (1. - t).powi(3))
+    }
+}
 
 pub struct SettingsUi {
     pub section: usize,
@@ -77,8 +142,11 @@ pub struct SettingsUi {
     pub notices: Option<NoticesPage>,
     pub changed: Instant,
     pub scroll: f32,
-    pub screen_scroll: f32,
     pub mouse: (f32, f32),
+    pub page_drag: Option<(NotchPage, Option<NotchPage>)>,
+    lifted_page: Option<NotchPage>,
+    page_slides: Vec<PageSlide>,
+    switch_motion: Vec<SwitchMotion>,
     pub hover: Option<usize>,
     pub previous_hover: Option<usize>,
     pub hover_changed: Instant,
@@ -99,8 +167,11 @@ impl SettingsUi {
             notices: None,
             changed: Instant::now(),
             scroll: 0.,
-            screen_scroll: 0.,
             mouse: (-1., -1.),
+            page_drag: None,
+            lifted_page: None,
+            page_slides: Vec::new(),
+            switch_motion: Vec::new(),
             hover: None,
             previous_hover: None,
             hover_changed: Instant::now() - std::time::Duration::from_secs(1),
@@ -115,6 +186,121 @@ impl SettingsUi {
         };
         ui.load_drafts(settings);
         ui
+    }
+    pub fn switch_position(&self, action: &Action, on: bool, now: Instant) -> f32 {
+        let Some(motion) = self
+            .switch_motion
+            .iter()
+            .find(|motion| &motion.key == action)
+        else {
+            return u8::from(on).into();
+        };
+        let progress = (now.saturating_duration_since(motion.started).as_secs_f32()
+            / SWITCH_DURATION.as_secs_f32())
+        .min(1.);
+        motion.from + (motion.to - motion.from) * cubic_bezier(progress, 0.25, 0.1, 0.25, 1.)
+    }
+    pub fn animate_switch(&mut self, action: Action, from: bool, to: bool, now: Instant) {
+        let from = self.switch_position(&action, from, now);
+        self.switch_motion.retain(|motion| motion.key != action);
+        self.switch_motion.push(SwitchMotion {
+            key: action,
+            from,
+            to: f32::from(u8::from(to)),
+            started: now,
+        });
+    }
+    pub fn update_motions(&mut self, now: Instant) {
+        self.switch_motion
+            .retain(|motion| now.saturating_duration_since(motion.started) < SWITCH_DURATION);
+        for slide in &mut self.page_slides {
+            if now.saturating_duration_since(slide.started) >= slide.duration {
+                slide.from = slide.to;
+            }
+        }
+        if self.page_drag.is_none() && self.page_slides.iter().all(|slide| slide.from == slide.to) {
+            self.page_slides.clear();
+            self.lifted_page = None;
+        }
+    }
+    pub fn controls_animating(&self) -> bool {
+        !self.switch_motion.is_empty()
+            || self.page_slides.iter().any(|slide| slide.from != slide.to)
+    }
+    pub fn track_page_drag(
+        &mut self,
+        pages: &PageOrder,
+        source: NotchPage,
+        target: Option<NotchPage>,
+        offset: f32,
+        now: Instant,
+    ) {
+        self.page_drag = Some((source, target));
+        self.lifted_page = Some(source);
+        let mut preview = pages.clone();
+        if let Some(target) = target {
+            preview.move_page(source, target);
+        }
+        for (index, &page) in pages.enabled().iter().enumerate() {
+            let to = if page == source {
+                index as f32 + offset / PAGE_ROW_HEIGHT
+            } else {
+                preview
+                    .enabled()
+                    .iter()
+                    .position(|item| *item == page)
+                    .expect("preview keeps all enabled pages") as f32
+            };
+            let duration = if page == source {
+                Duration::from_millis(65)
+            } else {
+                PAGE_SLIDE_DURATION
+            };
+            self.slide_page(page, index as f32, to, now, duration);
+        }
+    }
+    pub fn settle_pages(&mut self, pages: &PageOrder, now: Instant) {
+        if self.lifted_page.is_none() {
+            return;
+        }
+        self.page_slides.retain(|slide| pages.contains(slide.page));
+        for (index, &page) in pages.enabled().iter().enumerate() {
+            self.slide_page(page, index as f32, index as f32, now, PAGE_SLIDE_DURATION);
+        }
+    }
+    fn slide_page(
+        &mut self,
+        page: NotchPage,
+        index: f32,
+        to: f32,
+        now: Instant,
+        duration: Duration,
+    ) {
+        if let Some(slide) = self.page_slides.iter_mut().find(|slide| slide.page == page) {
+            if slide.to != to {
+                *slide = PageSlide {
+                    page,
+                    from: slide.position(now),
+                    to,
+                    started: now,
+                    duration,
+                };
+            }
+        } else if index != to {
+            self.page_slides.push(PageSlide {
+                page,
+                from: index,
+                to,
+                started: now,
+                duration,
+            });
+        }
+    }
+    fn page_position(&self, page: NotchPage, index: usize, now: Instant) -> f32 {
+        self.page_slides
+            .iter()
+            .find(|slide| slide.page == page)
+            .map_or(index as f32, |slide| slide.position(now))
     }
     pub fn load_drafts(&mut self, s: &AppSettings) {
         self.fields = Self::setting_fields(s);
@@ -189,7 +375,7 @@ fn select<T: Copy>(choices: &[T], index: i32) -> Result<T, PortError> {
         .ok_or_else(|| PortError::new("settings.status.invalidNumber", "invalid choice"))
 }
 preference_fields! {
-    bool {Floating=>desktop.appearance.floating,Glass=>desktop.appearance.glass,WidgetsEnabled=>desktop.widgets.enabled,MouseMove=>is_mouse_move_enabled,Startup=>desktop.start_with_windows,Minimal=>is_minimal_notch,Mascot=>is_mascot_enabled,Sounds=>reminders.sounds,HideFullscreen=>desktop.hide_in_fullscreen,OpenClick=>desktop.open_on_click,PageIcons=>desktop.page_icons,Fast=>desktop.fast_animations,Lyrics=>is_lyrics_enabled,MaEnabled=>music_assistant.is_enabled,VoiceEnabled=>wyoming.is_enabled,TaskStart=>reminders.task_start,TaskEnd=>reminders.task_end,Monday=>desktop.calendar_starts_monday,Week=>desktop.calendar_week_view,WaterEnabled=>water.enabled,EmptyShelf=>desktop.empty_shelf_on_start,HudVolume=>desktop.hud_volume,HudBrightness=>desktop.hud_brightness,HudCaps=>desktop.hud_caps_lock,HudLanguage=>desktop.hud_input_language,PopupBattery=>desktop.popup_battery,PopupWifi=>desktop.popup_wifi,PopupHeadphones=>desktop.popup_headphones,QuickShareVisible=>quick_share.visible}
+    bool {Floating=>desktop.appearance.floating,Glass=>desktop.appearance.glass,MotionBlur=>desktop.appearance.motion_blur,MouseMove=>is_mouse_move_enabled,Startup=>desktop.start_with_windows,Minimal=>is_minimal_notch,Mascot=>is_mascot_enabled,Sounds=>reminders.sounds,HideFullscreen=>desktop.hide_in_fullscreen,OpenClick=>desktop.open_on_click,PageIcons=>desktop.page_icons,Fast=>desktop.fast_animations,Lyrics=>is_lyrics_enabled,MaEnabled=>music_assistant.is_enabled,VoiceEnabled=>wyoming.is_enabled,TaskStart=>reminders.task_start,TaskEnd=>reminders.task_end,Monday=>desktop.calendar_starts_monday,Week=>desktop.calendar_week_view,WaterEnabled=>water.enabled,EmptyShelf=>desktop.empty_shelf_on_start,HudVolume=>desktop.hud_volume,HudBrightness=>desktop.hud_brightness,HudCaps=>desktop.hud_caps_lock,HudLanguage=>desktop.hud_input_language,PopupBattery=>desktop.popup_battery,PopupWifi=>desktop.popup_wifi,PopupHeadphones=>desktop.popup_headphones,QuickShareVisible=>quick_share.visible}
     number {GlassTint=>desktop.appearance.tint_percent,FirstCity=>desktop.widgets.first_city,SecondCity=>desktop.widgets.second_city,Scale=>desktop.scale_percent,Snooze=>reminders.snooze_minutes,TaskMinutes=>reminders.task_minutes,FocusMinutes=>reminders.focus_minutes,ShortMinutes=>reminders.short_break_minutes,LongMinutes=>reminders.long_break_minutes,Cycles=>reminders.focus_cycles,Goal=>water.goal_ml,Bottle=>water.bottle_ml,From=>water.active_from_minute,Until=>water.active_until_minute}
 }
 impl Preference {
@@ -220,27 +406,43 @@ impl Preference {
     }
 }
 
-pub const SECTIONS: [&str; 15] = [
+pub const SECTIONS: [&str; 16] = [
     "nav-general",
     "nav-display",
     "nav-appearance",
     "nav-music",
     "nav-todo",
-    "nav-calendar",
+    "",
     "nav-pomodoro",
     "nav-water",
     "nav-shelf",
     "nav-hud",
     "nav-about",
     "nav-mouse-move",
-    "nav-status-ring",
+    "",
     "nav-widgets",
     "nav-quick-share",
+    "nav-pages",
 ];
+
+pub(super) fn section_available(index: usize, settings: &AppSettings) -> bool {
+    let page = match index {
+        3 => NotchPage::Music,
+        4 => NotchPage::Todo,
+        6 => NotchPage::Pomodoro,
+        7 => NotchPage::Water,
+        8 => NotchPage::Shelf,
+        WIDGETS => NotchPage::Widgets,
+        QUICK_SHARE => NotchPage::QuickShare,
+        _ => return index == ABOUT || NAV_SECTIONS.contains(&index),
+    };
+    settings.desktop.pages.contains(page)
+}
 struct Form<'a> {
     scene: &'a mut Scene,
     settings: &'a AppSettings,
     ui: &'a SettingsUi,
+    now: Instant,
     x: f32,
     y: f32,
     width: f32,
@@ -272,6 +474,101 @@ impl Form<'_> {
         );
         self.y += 23.;
         self.group = Some((self.y, self.scene.paint.len()));
+    }
+
+    fn page_row(&mut self, page: NotchPage, position: Option<usize>) {
+        let on = position.is_some();
+        let row = Rect::new(self.x + 8., self.y, self.width - 16., PAGE_ROW_HEIGHT);
+        if self.ui.lifted_page != Some(page) {
+            let y = position.map_or(self.y, |index| {
+                self.y
+                    + (self.ui.page_position(page, index, self.now) - index as f32)
+                        * PAGE_ROW_HEIGHT
+            });
+            self.paint_page_row(page, y, on, false);
+        }
+        if let Some(index) = position
+            && let Some((source, target)) = self.ui.page_drag
+        {
+            if page == source && self.ui.lifted_page.is_none() {
+                self.scene.alpha_round(row, 6., 0x46a8ff, 0.18);
+            } else if page != source && target == Some(page) {
+                let pages = self.settings.desktop.pages.enabled();
+                let after = pages[..index].contains(&source);
+                let y = if after {
+                    row.y + row.h - 2.
+                } else {
+                    row.y + 1.
+                };
+                self.scene.line(row.x, y, row.x + row.w, y, 0x46a8ff, 2.);
+            }
+        }
+        let label = tr(super::views::page_appearance(page).1);
+        if on {
+            self.scene.hit(
+                row,
+                Action::ReorderPage(page),
+                format!("{} {label}", tr("pages-reorder")),
+            );
+        }
+        self.scene
+            .hit(self.page_switch(self.y), Action::TogglePage(page), &label);
+        self.y += PAGE_ROW_HEIGHT;
+        self.separator();
+    }
+
+    fn page_switch(&self, y: f32) -> Rect {
+        Rect::new(self.x + self.width - 52., y + 5., 38., 22.)
+    }
+
+    fn paint_page_row(&mut self, page: NotchPage, y: f32, on: bool, lifted: bool) {
+        let (glyph, label, accent) = super::views::page_appearance(page);
+        if lifted {
+            let row = Rect::new(self.x + 7., y + 1., self.width - 14., PAGE_ROW_HEIGHT - 2.);
+            self.scene.round(row, 6., 0x303a49);
+            self.scene.border(row, 6., 0x559bdb, 1.);
+        }
+        let badge = Rect::new(self.x + 14., y + 6., 22., 20.);
+        self.scene
+            .alpha_round(badge, 5., accent, if on { 0.24 } else { 0.12 });
+        self.scene
+            .icon(badge.inset(4.), glyph, if on { accent } else { self.dim });
+        self.scene.text(
+            Rect::new(
+                self.x + 45.,
+                y,
+                (self.width - 132.).max(32.),
+                PAGE_ROW_HEIGHT,
+            ),
+            tr(label),
+            12.,
+            if on { self.ink } else { self.dim },
+            false,
+            false,
+        );
+        let area = self.page_switch(y);
+        if on {
+            for column in 0..2 {
+                for dot in 0..3 {
+                    self.scene.round(
+                        Rect::new(
+                            area.x - 19. + column as f32 * 5.,
+                            y + 10. + dot as f32 * 5.,
+                            2.5,
+                            2.5,
+                        ),
+                        1.25,
+                        self.dim,
+                    );
+                }
+            }
+        }
+        draw_switch(
+            self.scene,
+            area,
+            self.ui
+                .switch_position(&Action::TogglePage(page), on, self.now),
+        );
     }
     fn separator(&mut self) {
         self.scene.line(
@@ -315,12 +612,11 @@ impl Form<'_> {
             22.,
         );
         let on = key.value(self.settings) != 0;
-        self.scene
-            .round(r, 11., if on { 0x24c856 } else { 0x49494d });
-        self.scene.round(
-            Rect::new(r.x + if on { 18. } else { 2. }, r.y + 2., 18., 18.),
-            9.,
-            0xffffff,
+        draw_switch(
+            self.scene,
+            r,
+            self.ui
+                .switch_position(&Action::Preference(key, 0), on, self.now),
         );
         self.scene.hit(
             Rect::new(self.x, self.y, self.width, height),
@@ -773,6 +1069,16 @@ fn clock_preview(scene: &mut Scene, frame: Rect, mode: Option<StatusRing>, offse
     );
 }
 
+fn draw_switch(scene: &mut Scene, r: Rect, position: f32) {
+    scene.round(r, 11., 0x49494d);
+    scene.alpha_round(r, 11., 0x24c856, position);
+    scene.round(
+        Rect::new(r.x + 2. + 16. * position, r.y + 2., 18., 18.),
+        9.,
+        0xffffff,
+    );
+}
+
 pub fn settings_scene(
     m: &UiModel,
     ui: &SettingsUi,
@@ -799,35 +1105,28 @@ pub fn settings_scene(
     scene.hit(Rect::new(8., 8., 25., 25.), Action::CloseSettings, "Close");
     let colors = [
         0x8c8c91, 0x6760ec, 0x88888c, 0xff3d68, 0x23c451, 0xff5148, 0xff7a27, 0x078bff, 0xffb026,
-        0x30b3cd, 0x858589, 0x6c9bed, 0x23c451, 0x168cff, 0x4385f5,
+        0x30b3cd, 0x858589, 0x6c9bed, 0x23c451, 0x168cff, 0x4385f5, 0x28a8cf,
     ];
-    let order = [
-        0,
-        STATUS_RING,
-        1,
-        2,
-        3,
-        WIDGETS,
-        4,
-        5,
-        6,
-        7,
-        8,
-        QUICK_SHARE,
-        9,
-        11,
-        ABOUT,
-    ];
-    let row_step = ((height - 94.) / (order.len() - 1) as f32).min(32.);
-    let row_height = (row_step - 2.).min(30.);
-    for (ordinal, i) in order.into_iter().enumerate() {
+    scene.line(
+        10.,
+        height - NAV_FOOTER,
+        182.,
+        height - NAV_FOOTER,
+        0x2c2c30,
+        1.,
+    );
+    let order = NAV_SECTIONS
+        .into_iter()
+        .filter(|index| section_available(*index, &m.settings))
+        .chain(std::iter::once(ABOUT));
+    for (ordinal, i) in order.enumerate() {
         let label = SECTIONS[i];
         let y = if i == ABOUT {
             height - 44.
         } else {
-            44. + ordinal as f32 * row_step
+            NAV_TOP + ordinal as f32 * NAV_STEP
         };
-        let item_height = if i == ABOUT { 30. } else { row_height };
+        let item_height = NAV_ROW_HEIGHT;
         let row = Rect::new(10., y, 172., item_height);
         if i == ui.section {
             scene.round(row, 8., 0x2b2b2e);
@@ -839,9 +1138,9 @@ pub fn settings_scene(
         scene.round(Rect::new(18., icon_y, icon_size, icon_size), 6., colors[i]);
         let icon = Rect::new(20., icon_y + 2., icon_size - 4., icon_size - 4.);
         match i {
-            STATUS_RING => scene.ring(icon.inset(1.), 1., 0xffffff, 2.),
             WIDGETS => scene.icon(icon, super::widgets::WIDGETS_ICON, 0xffffff),
             QUICK_SHARE => scene.icon(icon, "quick-share-radar", 0xffffff),
+            PAGES => scene.icon(icon, super::views::TODO, 0xffffff),
             11 => scene.icon(icon, "mouse-move", 0xffffff),
             _ => scene.icon(icon, &format!("settings-{i}"), 0xffffff),
         }
@@ -889,6 +1188,7 @@ pub fn settings_scene(
         scene: &mut scene,
         settings: &m.settings,
         ui,
+        now,
         x: content.x,
         y: content.y - ui.scroll + (1. - t) * 5.,
         width: content.w,
@@ -935,6 +1235,19 @@ pub fn settings_scene(
             );
         }
         1 => {
+            f.heading("ring-next-clock");
+            f.tiles(
+                P::StatusRing,
+                &[
+                    ("auto", "ring-auto-help"),
+                    ("nav-water", "ring-water-help"),
+                    ("nav-todo", "ring-todo-help"),
+                    ("off", "ring-off-help"),
+                ],
+                4,
+                68.,
+                |scene, frame, i| clock_preview(scene, frame, Some(StatusRing::ALL[i]), 7.),
+            );
             f.heading("section-notch");
             let top = f.y;
             f.scene.text(
@@ -953,53 +1266,70 @@ pub fn settings_scene(
                 false,
                 false,
             );
-            f.scene
-                .clip(Rect::new(f.x + 12., top + 62., f.width - 24., 134.));
-            for (i, display) in displays.iter().enumerate() {
-                let r = Rect::new(
-                    f.x + 12. + i as f32 * 174. - ui.screen_scroll,
-                    top + 68.,
-                    164.,
-                    108.,
+            let area = Rect::new(f.x + 17., top + 60., f.width - 34., 132.);
+            for (display, r) in display_map(displays, area) {
+                let number = display
+                    .id
+                    .strip_prefix(r"\\.\DISPLAY")
+                    .unwrap_or(&display.label);
+                let caption = format!(
+                    "{}×{}{}",
+                    display.rect.w as i32,
+                    display.rect.h as i32,
+                    if display.primary {
+                        format!(" · {}", tr("primary"))
+                    } else {
+                        String::new()
+                    }
                 );
                 let selected = m.settings.desktop.display_id == display.id
                     || (m.settings.desktop.display_id.is_empty() && display.primary);
+                let radius = (r.w.min(r.h) * 0.08).min(7.);
+                let card = r.inset(0.5);
                 f.scene
-                    .round(r, 7., if selected { 0x24372d } else { 0x303033 });
+                    .round(card, radius, if selected { 0x24372d } else { 0x303033 });
                 if selected {
-                    f.scene.border(r, 7., 0x277e42, 1.5);
+                    f.scene.border(card, radius, 0x277e42, 1.);
+                    if r.w > 25. && r.h > 32. {
+                        let w = (r.w / 4.).min(30.);
+                        f.scene.round(
+                            Rect::new(r.x + (r.w - w) / 2., r.y + 5., w, 4.),
+                            2.,
+                            0x16241c,
+                        );
+                    }
                 }
-                f.scene
-                    .round(Rect::new(r.x + 67., r.y + 5., 30., 4.), 2., 0x16241c);
-                f.scene.text(
-                    Rect::new(r.x, r.y + 35., r.w, 25.),
-                    (i + 1).to_string(),
-                    18.,
-                    0xdedee0,
-                    true,
-                    true,
+                let show_caption = r.w >= 92. && r.h >= 54.;
+                if r.w >= 14. && r.h >= 18. {
+                    let center = r.y + r.h / 2.;
+                    let height = r.h.min(24.);
+                    let y = center - height / 2. - if show_caption { 8. } else { 0. };
+                    let font_size = (r.h * 0.17).clamp(10., 18.);
+                    f.scene.text(
+                        Rect::new(r.x, y, r.w, height),
+                        number,
+                        font_size,
+                        0xdedee0,
+                        true,
+                        true,
+                    );
+                    if show_caption {
+                        f.scene.text(
+                            Rect::new(r.x, center + 5., r.w, 16.),
+                            &caption,
+                            10.,
+                            0x99999e,
+                            false,
+                            true,
+                        );
+                    }
+                }
+                f.scene.hit(
+                    r,
+                    Action::Display(display.id.clone()),
+                    format!("{number} · {caption}"),
                 );
-                f.scene.text(
-                    Rect::new(r.x, r.y + 67., r.w, 16.),
-                    format!(
-                        "{}×{}{}",
-                        display.rect.w as i32,
-                        display.rect.h as i32,
-                        if display.primary {
-                            format!(" · {}", tr("primary"))
-                        } else {
-                            String::new()
-                        }
-                    ),
-                    10.,
-                    0x99999e,
-                    false,
-                    true,
-                );
-                f.scene
-                    .hit(r, Action::Display(display.id.clone()), &display.label);
             }
-            f.scene.unclip();
             let auto = Rect::new(f.x + 14., top + 201., 90., 18.);
             f.scene.text(auto, tr("auto"), 10., 0x9ad9aa, false, false);
             f.scene
@@ -1047,6 +1377,11 @@ pub fn settings_scene(
                 P::Fast,
                 &tr("animation-speed"),
                 &[(tr("normal"), 0), (tr("fast"), 1)],
+            );
+            f.toggle(
+                P::MotionBlur,
+                &tr("motion-blur"),
+                Some(&tr("motion-blur-help")),
             );
             f.heading("section-options");
             f.choices(
@@ -1105,6 +1440,21 @@ pub fn settings_scene(
                 ],
             );
             f.number(P::TaskMinutes, &tr("task-duration"), 1);
+            f.heading("nav-calendar");
+            f.choices(
+                P::Monday,
+                &tr("week-starts"),
+                &[(tr("sunday"), 0), (tr("monday"), 1)],
+            );
+            f.choices(
+                P::Week,
+                &tr("default-view"),
+                &[(tr("month"), 0), (tr("week"), 1)],
+            );
+            f.separator();
+            let preview = Rect::new(f.x, f.y, f.width, 198.);
+            views::draw_calendar(f.scene, m, preview, false);
+            f.y += preview.h;
             f.task_api();
             f.heading("section-connection");
             f.toggle(
@@ -1119,24 +1469,6 @@ pub fn settings_scene(
             ] {
                 f.field(key, &crate::i18n::translate(label), false);
             }
-        }
-        5 => {
-            f.heading("section-preview");
-            let r = Rect::new(f.x, f.y, f.width, 198.);
-            f.scene.round(r, 12., card);
-            views::draw_calendar(f.scene, m, r, false);
-            f.y += 198.;
-            f.heading("section-options");
-            f.choices(
-                P::Monday,
-                &tr("week-starts"),
-                &[(tr("sunday"), 0), (tr("monday"), 1)],
-            );
-            f.choices(
-                P::Week,
-                &tr("default-view"),
-                &[(tr("month"), 0), (tr("week"), 1)],
-            );
         }
         6 => {
             f.heading("section-options");
@@ -1266,12 +1598,12 @@ pub fn settings_scene(
                 f.toggle(key, &tr(label), None);
             }
             f.heading("section-popups");
-            for (key, label) in [
-                (P::PopupBattery, "battery"),
-                (P::PopupWifi, "wifi"),
-                (P::PopupHeadphones, "headset"),
-            ] {
-                f.toggle(key, &tr(label), None);
+            if m.settings.desktop.pages.contains(NotchPage::Charging) {
+                f.toggle(P::PopupBattery, &tr("battery"), None);
+            }
+            f.toggle(P::PopupWifi, &tr("wifi"), None);
+            if m.settings.desktop.pages.contains(NotchPage::Headphones) {
+                f.toggle(P::PopupHeadphones, &tr("headset"), None);
             }
         }
         11 => {
@@ -1296,28 +1628,7 @@ pub fn settings_scene(
                 f.y += 70.;
             }
         }
-        STATUS_RING => {
-            f.heading("ring-next-clock");
-            f.tiles(
-                P::StatusRing,
-                &[
-                    ("auto", "ring-auto-help"),
-                    ("nav-water", "ring-water-help"),
-                    ("nav-todo", "ring-todo-help"),
-                    ("off", "ring-off-help"),
-                ],
-                4,
-                68.,
-                |scene, frame, i| clock_preview(scene, frame, Some(StatusRing::ALL[i]), 7.),
-            );
-        }
         WIDGETS => {
-            f.heading("widgets-page");
-            f.toggle(
-                P::WidgetsEnabled,
-                &tr("widgets-show"),
-                Some(&tr("widgets-help")),
-            );
             f.heading("widgets-choose");
             for (i, label) in ["widgets-left", "widgets-right"].into_iter().enumerate() {
                 let r = Rect::new(f.x + 14. + i as f32 * 71., f.y + 6., 65., 22.);
@@ -1366,6 +1677,34 @@ pub fn settings_scene(
             f.step(P::SecondCity, &tr("widgets-city-second"), 1);
             f.field(Field::CountdownName, &tr("widgets-event"), false);
             f.field(Field::CountdownDate, &tr("widgets-date"), false);
+        }
+        PAGES => {
+            f.text(&tr("pages-help"));
+            let pages = m.settings.desktop.pages.enabled();
+            let mut page_top = f.y;
+            if !pages.is_empty() {
+                f.heading("pages-visible");
+                page_top = f.y;
+                for (index, page) in pages.iter().copied().enumerate() {
+                    f.page_row(page, Some(index));
+                }
+            }
+            if pages.len() != NotchPage::ALL.len() {
+                f.heading("pages-hidden");
+                for page in NotchPage::ALL
+                    .into_iter()
+                    .filter(|page| !pages.contains(page))
+                {
+                    f.page_row(page, None);
+                }
+            }
+            f.finish_group();
+            if let Some(page) = ui.lifted_page
+                && let Some(index) = pages.iter().position(|item| *item == page)
+            {
+                let y = page_top + ui.page_position(page, index, now) * PAGE_ROW_HEIGHT;
+                f.paint_page_row(page, y, true, true);
+            }
         }
         QUICK_SHARE => {
             f.heading("nav-quick-share");

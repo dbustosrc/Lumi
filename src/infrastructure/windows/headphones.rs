@@ -33,9 +33,15 @@ struct EndpointRegistry {
     has_completed_initial_scan: bool,
 }
 
-/// Keeps the WinRT [`DeviceWatcher`] alive for the lifetime of the application.
+/// Owns the WinRT [`DeviceWatcher`] while a feature needs Bluetooth audio events.
 pub struct HeadphonesWatcher {
-    _watcher: DeviceWatcher,
+    watcher: DeviceWatcher,
+}
+
+impl Drop for HeadphonesWatcher {
+    fn drop(&mut self) {
+        let _ = self.watcher.Stop();
+    }
 }
 
 /// Starts listening for paired Bluetooth audio devices connecting to Windows.
@@ -56,7 +62,7 @@ pub fn watch_headphones(events: EventSender) -> windows::core::Result<Headphones
     register_removed_handler(&watcher, Arc::clone(&registry), events.clone())?;
     register_completed_handler(&watcher, registry, events)?;
     watcher.Start()?;
-    Ok(HeadphonesWatcher { _watcher: watcher })
+    Ok(HeadphonesWatcher { watcher })
 }
 
 fn register_added_handler(

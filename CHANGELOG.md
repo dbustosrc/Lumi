@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.0
+
+- Added a Pages setting to reorder notch pages by dragging, or disable pages and their background features.
+- Added optional motion blur when opening the notch or switching pages, and smoother settings switches.
+- Display now maps each monitor by its Windows position and resolution, with a notch preview on the selected monitor. Status ring options are now in Display, and calendar options are in To-do.
+- Expanded World Clock from 12 to 65 cities.
+- Reduced background polling and loaded Shelf image previews on demand.
+- Prevented multiple instances of Lumi from running in the same Windows session.
+
 ## 1.4.0
 
 - Added Quick Share for sending and receiving files with nearby Android devices. Drop files on the notch to choose Shelf or Quick Share. Review incoming requests and confirm the code before accepting.

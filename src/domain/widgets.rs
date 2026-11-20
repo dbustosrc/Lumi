@@ -45,7 +45,7 @@ pub struct City {
     pub zone: &'static str,
 }
 
-pub const CITIES: [City; 12] = [
+pub const CITIES: &[City] = &[
     City {
         name: "Tokyo",
         zone: "Tokyo Standard Time",
@@ -93,6 +93,218 @@ pub const CITIES: [City; 12] = [
     City {
         name: "Sydney",
         zone: "AUS Eastern Standard Time",
+    },
+    City {
+        name: "Vancouver",
+        zone: "Pacific Standard Time",
+    },
+    City {
+        name: "Toronto",
+        zone: "Eastern Standard Time",
+    },
+    City {
+        name: "Halifax",
+        zone: "Atlantic Standard Time",
+    },
+    City {
+        name: "Chicago",
+        zone: "Central Standard Time",
+    },
+    City {
+        name: "Denver",
+        zone: "Mountain Standard Time",
+    },
+    City {
+        name: "Phoenix",
+        zone: "US Mountain Standard Time",
+    },
+    City {
+        name: "Anchorage",
+        zone: "Alaskan Standard Time",
+    },
+    City {
+        name: "Honolulu",
+        zone: "Hawaiian Standard Time",
+    },
+    City {
+        name: "Guatemala City",
+        zone: "Central America Standard Time",
+    },
+    City {
+        name: "Havana",
+        zone: "Cuba Standard Time",
+    },
+    City {
+        name: "Bogotá",
+        zone: "SA Pacific Standard Time",
+    },
+    City {
+        name: "Lima",
+        zone: "SA Pacific Standard Time",
+    },
+    City {
+        name: "Caracas",
+        zone: "Venezuela Standard Time",
+    },
+    City {
+        name: "La Paz",
+        zone: "SA Western Standard Time",
+    },
+    City {
+        name: "Santiago",
+        zone: "Pacific SA Standard Time",
+    },
+    City {
+        name: "Buenos Aires",
+        zone: "Argentina Standard Time",
+    },
+    City {
+        name: "Montevideo",
+        zone: "Montevideo Standard Time",
+    },
+    City {
+        name: "Rio de Janeiro",
+        zone: "E. South America Standard Time",
+    },
+    City {
+        name: "Reykjavík",
+        zone: "Greenwich Standard Time",
+    },
+    City {
+        name: "Dublin",
+        zone: "GMT Standard Time",
+    },
+    City {
+        name: "Lisbon",
+        zone: "GMT Standard Time",
+    },
+    City {
+        name: "Paris",
+        zone: "Romance Standard Time",
+    },
+    City {
+        name: "Berlin",
+        zone: "W. Europe Standard Time",
+    },
+    City {
+        name: "Amsterdam",
+        zone: "W. Europe Standard Time",
+    },
+    City {
+        name: "Rome",
+        zone: "W. Europe Standard Time",
+    },
+    City {
+        name: "Stockholm",
+        zone: "W. Europe Standard Time",
+    },
+    City {
+        name: "Warsaw",
+        zone: "Central European Standard Time",
+    },
+    City {
+        name: "Athens",
+        zone: "GTB Standard Time",
+    },
+    City {
+        name: "Kyiv",
+        zone: "FLE Standard Time",
+    },
+    City {
+        name: "Istanbul",
+        zone: "Turkey Standard Time",
+    },
+    City {
+        name: "Moscow",
+        zone: "Russian Standard Time",
+    },
+    City {
+        name: "Casablanca",
+        zone: "Morocco Standard Time",
+    },
+    City {
+        name: "Cairo",
+        zone: "Egypt Standard Time",
+    },
+    City {
+        name: "Nairobi",
+        zone: "E. Africa Standard Time",
+    },
+    City {
+        name: "Johannesburg",
+        zone: "South Africa Standard Time",
+    },
+    City {
+        name: "Jerusalem",
+        zone: "Israel Standard Time",
+    },
+    City {
+        name: "Riyadh",
+        zone: "Arab Standard Time",
+    },
+    City {
+        name: "Karachi",
+        zone: "Pakistan Standard Time",
+    },
+    City {
+        name: "Kathmandu",
+        zone: "Nepal Standard Time",
+    },
+    City {
+        name: "Dhaka",
+        zone: "Bangladesh Standard Time",
+    },
+    City {
+        name: "Bangkok",
+        zone: "SE Asia Standard Time",
+    },
+    City {
+        name: "Jakarta",
+        zone: "SE Asia Standard Time",
+    },
+    City {
+        name: "Beijing",
+        zone: "China Standard Time",
+    },
+    City {
+        name: "Hong Kong",
+        zone: "China Standard Time",
+    },
+    City {
+        name: "Taipei",
+        zone: "Taipei Standard Time",
+    },
+    City {
+        name: "Manila",
+        zone: "Singapore Standard Time",
+    },
+    City {
+        name: "Seoul",
+        zone: "Korea Standard Time",
+    },
+    City {
+        name: "Perth",
+        zone: "W. Australia Standard Time",
+    },
+    City {
+        name: "Adelaide",
+        zone: "Cen. Australia Standard Time",
+    },
+    City {
+        name: "Brisbane",
+        zone: "E. Australia Standard Time",
+    },
+    City {
+        name: "Melbourne",
+        zone: "AUS Eastern Standard Time",
+    },
+    City {
+        name: "Auckland",
+        zone: "New Zealand Standard Time",
+    },
+    City {
+        name: "Suva",
+        zone: "Fiji Standard Time",
     },
 ];
 

@@ -45,7 +45,7 @@ pub async fn supervise_sendspin_player(mut settings: watch::Receiver<AppSettings
     let player_id = local_player_id();
     let mut retry_delay = MIN_RETRY_DELAY;
     loop {
-        let config = settings.borrow_and_update().music_assistant.clone();
+        let config = settings.borrow_and_update().active_music_assistant();
         if !is_ready_config(&config) {
             if !wait_for_ma_change(&mut settings, &config).await {
                 return;
@@ -85,7 +85,7 @@ async fn wait_for_ma_change(
     current: &MusicAssistantSettings,
 ) -> bool {
     while settings.changed().await.is_ok() {
-        if settings.borrow().music_assistant != *current {
+        if settings.borrow().active_music_assistant() != *current {
             return true;
         }
     }

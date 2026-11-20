@@ -56,10 +56,7 @@ pub enum ViewUpdate {
     MascotHeadphones,
     MascotAlert,
     CapsLock(bool),
-    Calendar {
-        grid: crate::domain::calendar::CalendarGrid,
-        tasks: Vec<TodoTask>,
-    },
+    Calendar(crate::domain::calendar::CalendarGrid),
     Utility(super::reminders::UtilityState),
     FocusToday(u64, u32),
     Water(crate::domain::water::WaterState),
@@ -100,6 +97,7 @@ pub enum ViewUpdate {
     QuickShareStaged,
     ShelfThumbnail {
         id: uuid::Uuid,
+        revision: chrono::DateTime<chrono::Utc>,
         thumbnail: ShelfThumbnail,
     },
     ShelfDragHover(bool),

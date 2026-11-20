@@ -1,9 +1,8 @@
 use crate::application::events::{AppEvent, EventSender};
 use crate::domain::device::WifiState;
 use crate::domain::ports::PortError;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 use windows::Networking::Connectivity::{
     NetworkConnectivityLevel, NetworkInformation, NetworkStatusChangedEventHandler,
 };
@@ -49,16 +48,17 @@ impl CapsLockWatcher {
             unsafe { GetKeyState(i32::from(VK_CAPITAL.0)) } & 1 != 0,
             Ordering::Relaxed,
         );
-        if let Ok(mut sender) = CAPS_EVENTS.lock() {
-            *sender = Some(events);
-        }
-        unsafe {
+        CAPS_DOWN.store(false, Ordering::Relaxed);
+        let hook = unsafe {
             let module = GetModuleHandleW(None)
                 .map_err(|error| PortError::new("hud.error.keyboard", error))?;
             SetWindowsHookExW(WH_KEYBOARD_LL, Some(caps_hook), Some(module.into()), 0)
-                .map(Self)
-                .map_err(|error| PortError::new("hud.error.keyboard", error))
+                .map_err(|error| PortError::new("hud.error.keyboard", error))?
+        };
+        if let Ok(mut sender) = CAPS_EVENTS.lock() {
+            *sender = Some(events);
         }
+        Ok(Self(hook))
     }
 }
 unsafe extern "system" fn caps_hook(code: i32, message: WPARAM, data: LPARAM) -> LRESULT {
@@ -85,7 +85,7 @@ unsafe extern "system" fn caps_hook(code: i32, message: WPARAM, data: LPARAM) ->
     unsafe { CallNextHookEx(None, code, message, data) }
 }
 
-pub fn input_language() -> Option<String> {
+pub fn input_language() -> Option<u32> {
     unsafe {
         let foreground = GetForegroundWindow();
         if foreground.is_invalid() {
@@ -93,51 +93,99 @@ pub fn input_language() -> Option<String> {
         }
         let thread = GetWindowThreadProcessId(foreground, None);
         let language = (GetKeyboardLayout(thread).0 as usize & 0xffff) as u32;
-        let mut name = [0; 128];
-        let length = GetLocaleInfoW(language, LOCALE_SLOCALIZEDDISPLAYNAME, Some(&mut name));
-        (length > 0).then(|| String::from_utf16_lossy(&name[..length as usize - 1]))
+        (language != 0).then_some(language)
     }
 }
 
-pub fn spawn(events: EventSender) -> Result<(), PortError> {
-    std::thread::Builder::new()
-        .name("desktop-status".into())
-        .spawn(move || {
-            if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_err() {
-                tracing::warn!(event = "log.hud.initializeFailed");
-                return;
-            }
-            let network_events = events.clone();
-            let network = NetworkInformation::NetworkStatusChanged(
-                &NetworkStatusChangedEventHandler::new(move |_| {
-                    if let Ok(state) = wifi_state() {
-                        let _ = network_events.send(AppEvent::Wifi(state));
-                    }
-                    Ok(())
-                }),
-            );
-            if let Ok(state) = wifi_state() {
-                let _ = events.send(AppEvent::Wifi(state));
-            }
-            let brightness = connect_brightness();
-            let mut last_brightness = None;
-            while !events.is_closed() {
-                if let Ok(service) = &brightness
-                    && let Some(value) = read_brightness(service)
-                    && last_brightness != Some(value)
-                {
-                    last_brightness = Some(value);
-                    let _ = events.send(AppEvent::Brightness(value));
+pub fn language_name(language: u32) -> Option<String> {
+    let mut name = [0; 128];
+    let length = unsafe { GetLocaleInfoW(language, LOCALE_SLOCALIZEDDISPLAYNAME, Some(&mut name)) };
+    (length > 0).then(|| String::from_utf16_lossy(&name[..length as usize - 1]))
+}
+
+pub struct WifiWatcher(i64);
+
+impl WifiWatcher {
+    pub fn start(events: EventSender) -> windows::core::Result<Self> {
+        let network_events = events.clone();
+        let token = NetworkInformation::NetworkStatusChanged(
+            &NetworkStatusChangedEventHandler::new(move |_| {
+                if let Ok(state) = wifi_state() {
+                    let _ = network_events.send(AppEvent::Wifi(state));
                 }
-                std::thread::sleep(Duration::from_secs(1));
-            }
-            if let Ok(token) = network {
-                let _ = NetworkInformation::RemoveNetworkStatusChanged(token);
-            }
-            unsafe { CoUninitialize() };
-        })
-        .map(|_| ())
-        .map_err(|error| PortError::new("hud.error.initialize", error))
+                Ok(())
+            }),
+        )?;
+        if let Ok(state) = wifi_state() {
+            let _ = events.send(AppEvent::Wifi(state));
+        }
+        Ok(Self(token))
+    }
+}
+
+impl Drop for WifiWatcher {
+    fn drop(&mut self) {
+        let _ = NetworkInformation::RemoveNetworkStatusChanged(self.0);
+    }
+}
+
+pub struct BrightnessWatcher(Arc<AtomicBool>);
+
+impl BrightnessWatcher {
+    pub fn start(events: EventSender) -> std::io::Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        std::thread::Builder::new()
+            .name("display-brightness".into())
+            .spawn(move || {
+                if let Err(error) = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok() } {
+                    tracing::warn!(event = "log.hud.initializeFailed", error = %error);
+                    return;
+                }
+                if let Err(error) = observe_brightness(&events, &worker_stop) {
+                    tracing::debug!(event = "log.hud.initializeFailed", error = %error);
+                }
+                unsafe { CoUninitialize() };
+            })?;
+        Ok(Self(stop))
+    }
+}
+
+impl Drop for BrightnessWatcher {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+fn observe_brightness(events: &EventSender, stop: &AtomicBool) -> windows::core::Result<()> {
+    let service = connect_brightness()?;
+    let changes = unsafe {
+        service.ExecNotificationQuery(
+            &BSTR::from("WQL"),
+            &BSTR::from("SELECT * FROM WmiMonitorBrightnessEvent"),
+            WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+            None,
+        )?
+    };
+    let mut last_brightness = read_brightness(&service);
+    if let Some(value) = last_brightness {
+        let _ = events.send(AppEvent::Brightness(value));
+    }
+    while !events.is_closed() && !stop.load(Ordering::Relaxed) {
+        let mut objects = [None];
+        let mut returned = 0;
+        // The provider blocks until a change. The timeout only checks for shutdown.
+        unsafe { changes.Next(1000, &mut objects, &mut returned).ok()? };
+        if returned != 0
+            && !stop.load(Ordering::Relaxed)
+            && let Some(value) = read_brightness(&service)
+            && last_brightness != Some(value)
+        {
+            last_brightness = Some(value);
+            let _ = events.send(AppEvent::Brightness(value));
+        }
+    }
+    Ok(())
 }
 
 fn wifi_state() -> windows::core::Result<WifiState> {

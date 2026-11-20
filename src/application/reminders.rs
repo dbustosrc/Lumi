@@ -100,10 +100,13 @@ impl Reminders {
     }
     pub fn cancel_task(&mut self, id: Uuid) {
         if self.task.as_ref().is_some_and(|task| task.0 == id) {
-            self.task = None;
-            self.last_notice = None;
-            self.snooze_at = None;
+            self.clear_task();
         }
+    }
+    pub fn clear_task(&mut self) {
+        self.task = None;
+        self.last_notice = None;
+        self.snooze_at = None;
     }
     pub fn snooze(&mut self, now: Instant) {
         if self.last_notice.is_some() {

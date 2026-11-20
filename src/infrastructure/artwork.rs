@@ -71,9 +71,8 @@ impl ArtworkLoader for HttpArtworkLoader {
 mod tests;
 
 fn decode_artwork(bytes: &[u8]) -> Result<Artwork, PortError> {
-    let image = image::load_from_memory(bytes)
+    let thumbnail = super::windows::thumbnail::from_bytes(bytes, ARTWORK_SIZE)
         .map_err(|error| PortError::new("media.error.artworkDecode", error))?;
-    let thumbnail = image.thumbnail(ARTWORK_SIZE, ARTWORK_SIZE).to_rgba8();
     let (width, height) = thumbnail.dimensions();
     Ok(Artwork::from_rgba(thumbnail.into_raw(), width, height))
 }

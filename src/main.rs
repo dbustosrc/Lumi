@@ -41,15 +41,13 @@ enum StartupError {
     #[error(transparent)]
     Http(#[from] reqwest::Error),
 }
-struct SystemWatchers {
-    #[cfg(windows)]
-    _caps_lock: Option<infrastructure::windows::desktop_status::CapsLockWatcher>,
-    #[cfg(windows)]
-    _headphones: Option<infrastructure::windows::headphones::HeadphonesWatcher>,
-    #[cfg(windows)]
-    _notifications: Option<infrastructure::windows::notifications::NotificationWatcher>,
-}
 fn main() -> ExitCode {
+    let Ok(instance) = single_instance() else {
+        return ExitCode::FAILURE;
+    };
+    let Some(_instance) = instance else {
+        return ExitCode::SUCCESS;
+    };
     let Ok(data_dir) = infrastructure::paths::data_directory() else {
         return ExitCode::FAILURE;
     };
@@ -71,14 +69,32 @@ fn main() -> ExitCode {
         }
     }
 }
+
+struct InstanceGuard(windows::Win32::Foundation::HANDLE);
+
+impl Drop for InstanceGuard {
+    fn drop(&mut self) {
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+fn single_instance() -> windows::core::Result<Option<InstanceGuard>> {
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::System::Threading::CreateMutexW;
+    let handle = unsafe { CreateMutexW(None, false, windows::core::w!("Local\\dbustosrc.Lumi"))? };
+    let already_running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    Ok((!already_running).then_some(InstanceGuard(handle)))
+}
+
 fn run_application(data_dir: &Path, system_locale: Option<String>) -> Result<(), StartupError> {
     let settings = load_settings_service(data_dir, system_locale.as_deref())?;
     let runtime = build_async_runtime()?;
     let (event_tx, event_rx) = create_event_channel();
-    let task_tokens = start_task_api(&runtime, data_dir, event_tx.clone()).map_err(|error| {
-        tracing::warn!(event = "log.taskApi.unavailable", reason = error.key);
-        error.key
-    });
+    let task_tokens = start_task_api(&runtime, data_dir, event_tx.clone(), settings.subscribe())
+        .map_err(|error| {
+            tracing::warn!(event = "log.taskApi.unavailable", reason = error.key);
+            error.key
+        });
     let host = NativeHost::new(
         Arc::clone(&settings),
         event_tx.clone(),
@@ -86,8 +102,7 @@ fn run_application(data_dir: &Path, system_locale: Option<String>) -> Result<(),
         task_tokens,
     )?;
     let presenter: Arc<dyn NotchPresenter> = host.presenter.clone();
-    let _watchers =
-        spawn_background_services(&runtime, data_dir, &settings, presenter, event_tx, event_rx)?;
+    spawn_background_services(&runtime, data_dir, &settings, presenter, event_tx, event_rx)?;
     tracing::info!(event = "log.app.ready");
     host.run()?;
     Ok(())
@@ -97,15 +112,30 @@ fn start_task_api(
     runtime: &tokio::runtime::Runtime,
     data_dir: &Path,
     events: EventSender,
+    settings: tokio::sync::watch::Receiver<application::settings::AppSettings>,
 ) -> Result<Arc<infrastructure::task_tokens::TaskTokens>, PortError> {
     use infrastructure::{task_api, task_tokens::TaskTokens};
     let tokens = Arc::new(TaskTokens::load(data_dir.join("task-api-tokens.json"))?);
     let bind_error = |error| PortError::new("taskApi.error.listen", error);
-    let listener = std::net::TcpListener::bind(task_api::ADDRESS).map_err(bind_error)?;
-    listener.set_nonblocking(true).map_err(bind_error)?;
     let _enter = runtime.enter();
-    let listener = tokio::net::TcpListener::from_std(listener).map_err(bind_error)?;
-    runtime.spawn(task_api::serve(listener, tokens.clone(), events));
+    let listener = if settings
+        .borrow()
+        .desktop
+        .pages
+        .contains(domain::notch::NotchPage::Todo)
+    {
+        let listener = std::net::TcpListener::bind(task_api::ADDRESS).map_err(bind_error)?;
+        listener.set_nonblocking(true).map_err(bind_error)?;
+        Some(tokio::net::TcpListener::from_std(listener).map_err(bind_error)?)
+    } else {
+        None
+    };
+    runtime.spawn(task_api::serve_when_enabled(
+        listener,
+        tokens.clone(),
+        events,
+        settings,
+    ));
     Ok(tokens)
 }
 fn load_settings_service(
@@ -138,7 +168,7 @@ fn spawn_background_services(
     presenter: Arc<dyn NotchPresenter>,
     event_tx: EventSender,
     event_rx: EventReceiver,
-) -> Result<SystemWatchers, StartupError> {
+) -> Result<(), StartupError> {
     let _enter = runtime.enter();
     runtime.spawn(application::mouse_mover::run(
         settings.subscribe(),
@@ -147,10 +177,15 @@ fn spawn_background_services(
     ));
 
     let media = build_media_session(settings, &event_tx, Arc::clone(&presenter))?;
+    let current = settings.current();
     let shelf = load_shelf_service(
         data_dir,
         event_tx.clone(),
-        settings.current().desktop.empty_shelf_on_start,
+        current.desktop.empty_shelf_on_start
+            && current
+                .desktop
+                .pages
+                .contains(crate::domain::notch::NotchPage::Shelf),
     )?;
     let todo = load_todo_service(data_dir)?;
     let voice = build_voice_capture(settings, event_tx.clone());
@@ -180,10 +215,10 @@ fn spawn_background_services(
         todo,
         voice,
     };
-    let controller = NotchController::new(services, presenter, &settings.current());
-    let watchers = start_system_watchers(&event_tx);
+    let controller = NotchController::new(services, presenter, &current);
+    start_power_watcher(&event_tx);
     runtime.spawn(controller.run(event_rx));
-    Ok(watchers)
+    Ok(())
 }
 
 fn build_media_session(
@@ -201,7 +236,7 @@ fn build_media_session(
     ));
     let artwork = Arc::new(HttpArtworkLoader::new(client.clone(), settings.subscribe()));
     let lyrics = Arc::new(LrclibLyricsProvider::new(client));
-    let (windows, volume) = build_windows_media(event_tx)?;
+    let (windows, volume) = build_windows_media(event_tx, settings.subscribe())?;
     let ports = MediaPorts {
         controller,
         windows,
@@ -218,13 +253,19 @@ type SystemMediaPorts = (
 );
 
 #[cfg(windows)]
-fn build_windows_media(events: &EventSender) -> Result<SystemMediaPorts, StartupError> {
-    let controller = infrastructure::windows::media::spawn(events.clone())?;
+fn build_windows_media(
+    events: &EventSender,
+    settings: tokio::sync::watch::Receiver<application::settings::AppSettings>,
+) -> Result<SystemMediaPorts, StartupError> {
+    let controller = infrastructure::windows::media::spawn(events.clone(), settings)?;
     Ok((controller.clone(), controller))
 }
 
 #[cfg(not(windows))]
-fn build_windows_media(_events: &EventSender) -> Result<SystemMediaPorts, StartupError> {
+fn build_windows_media(
+    _events: &EventSender,
+    _settings: tokio::sync::watch::Receiver<application::settings::AppSettings>,
+) -> Result<SystemMediaPorts, StartupError> {
     Err(PortError::new("music.error.windowsMedia", "Windows is required").into())
 }
 
@@ -256,47 +297,17 @@ fn build_voice_capture(settings: &Arc<SettingsService>, event_tx: EventSender) -
 }
 
 #[cfg(windows)]
-fn start_system_watchers(event_tx: &EventSender) -> SystemWatchers {
-    let notifications =
-        infrastructure::windows::notifications::NotificationWatcher::start(event_tx.clone())
-            .map_err(
-                |error| tracing::warn!(event = "log.notifications.subscribeFailed", error = %error),
-            )
-            .ok();
-    let caps_lock =
-        infrastructure::windows::desktop_status::CapsLockWatcher::install(event_tx.clone())
-            .map_err(|error| tracing::warn!(event = "log.hud.keyboardFailed", error = %error))
-            .ok();
-    if let Err(error) = infrastructure::windows::desktop_status::spawn(event_tx.clone()) {
-        tracing::warn!(event = "log.hud.initializeFailed", error = %error);
-    }
+fn start_power_watcher(event_tx: &EventSender) {
     if let Err(error) = infrastructure::windows::power::watch_power(event_tx.clone()) {
         tracing::error!(
             event = "log.power.watcherFailed",
             error = &error as &(dyn std::error::Error + 'static)
         );
     }
-    let headphones = match infrastructure::windows::headphones::watch_headphones(event_tx.clone()) {
-        Ok(watcher) => Some(watcher),
-        Err(error) => {
-            tracing::error!(
-                event = "log.headphones.watcherFailed",
-                error = &error as &(dyn std::error::Error + 'static)
-            );
-            None
-        }
-    };
-    SystemWatchers {
-        _notifications: notifications,
-        _headphones: headphones,
-        _caps_lock: caps_lock,
-    }
 }
 
 #[cfg(not(windows))]
-fn start_system_watchers(_event_tx: &EventSender) -> SystemWatchers {
-    SystemWatchers {}
-}
+fn start_power_watcher(_event_tx: &EventSender) {}
 
 #[cfg(windows)]
 fn detect_system_locale() -> Option<String> {

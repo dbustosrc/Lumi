@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use image::imageops::FilterType;
 use tokio::sync::{Semaphore, oneshot};
 
 use crate::domain::ports::{PortError, PortFuture, ShelfPlatform};
@@ -82,10 +81,7 @@ fn decode_image_thumbnail(path: &Path) -> Option<ShelfThumbnail> {
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_THUMBNAIL_SOURCE_BYTES {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
-    let decoded = image::load_from_memory(&bytes).ok()?;
-    let square = decoded.resize_to_fill(THUMBNAIL_SIDE_PX, THUMBNAIL_SIDE_PX, FilterType::Triangle);
-    let rgba = square.to_rgba8();
+    let rgba = super::windows::thumbnail::from_file(path, THUMBNAIL_SIDE_PX).ok()?;
     Some(ShelfThumbnail {
         width: rgba.width(),
         height: rgba.height(),

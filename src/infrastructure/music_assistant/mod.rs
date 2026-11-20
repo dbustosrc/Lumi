@@ -82,7 +82,7 @@ async fn supervise(
 ) {
     let mut retry_delay = MIN_RETRY_DELAY;
     loop {
-        let config = settings.borrow_and_update().music_assistant.clone();
+        let config = settings.borrow_and_update().active_music_assistant();
         if !config.is_enabled || config.server_url.trim().is_empty() {
             publish_disconnected(&events, MediaConnection::NotConfigured);
             if !wait_for_change(&mut settings, &config).await {
@@ -141,7 +141,7 @@ async fn wait_for_change(
     current: &MusicAssistantSettings,
 ) -> bool {
     while settings.changed().await.is_ok() {
-        if settings.borrow().music_assistant != *current {
+        if settings.borrow().active_music_assistant() != *current {
             return true;
         }
     }

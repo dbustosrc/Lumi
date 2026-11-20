@@ -145,10 +145,12 @@ impl NotchController {
     fn handle_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::QuickShare(command) => {
-                let _ = self.services.quick_share.send(command);
+                if self.desktop.pages.contains(NotchPage::QuickShare) {
+                    let _ = self.services.quick_share.send(command);
+                }
             }
             AppEvent::TaskApi { command, reply } => {
-                if !reply.is_closed() {
+                if !reply.is_closed() && self.desktop.pages.contains(NotchPage::Todo) {
                     let mutation = command.is_mutation();
                     let result = self.services.todo.execute(command);
                     if mutation {
@@ -211,6 +213,9 @@ impl NotchController {
             AppEvent::MascotActivity => self.keep_mascot_awake(Instant::now()),
             AppEvent::ShelfTextDropped(text) => {
                 self.on_file_drag_hover(None);
+                if !self.desktop.pages.contains(NotchPage::Shelf) {
+                    return;
+                }
                 self.on_drop_received();
                 let result = self.services.shelf.add_text(text);
                 self.after_shelf_mutation(result);
@@ -270,7 +275,10 @@ impl NotchController {
                     self.keep_mascot_awake(Instant::now());
                     self.presenter.apply(ViewUpdate::MascotHeadphones);
                 }
-                if is_newly_connected && self.desktop.popup_headphones {
+                if is_newly_connected
+                    && self.desktop.popup_headphones
+                    && self.desktop.pages.contains(NotchPage::Headphones)
+                {
                     self.show_peek(Peek::Headphones);
                 }
             }
@@ -288,15 +296,27 @@ impl NotchController {
                 self.on_files_dropped(paths, destination)
             }
             AppEvent::FilesPicked(paths) => self.on_files_picked(&paths),
-            AppEvent::ShelfThumbnailLoaded { id, thumbnail } => {
+            AppEvent::ShelfImagesVisible(ids) => {
+                if self.desktop.pages.contains(NotchPage::Shelf) {
+                    self.services.shelf.show_images(&ids);
+                }
+            }
+            AppEvent::ShelfThumbnailLoaded {
+                id,
+                revision,
+                thumbnail,
+            } => {
                 if let Some(thumbnail) = thumbnail
                     && self
                         .services
                         .shelf
-                        .on_thumbnail_loaded(id, Some(thumbnail.clone()))
+                        .on_thumbnail_loaded(id, revision, thumbnail.clone())
                 {
-                    self.presenter
-                        .apply(ViewUpdate::ShelfThumbnail { id, thumbnail });
+                    self.presenter.apply(ViewUpdate::ShelfThumbnail {
+                        id,
+                        revision,
+                        thumbnail,
+                    });
                 }
             }
             AppEvent::OutboundFileDragState {
@@ -310,6 +330,29 @@ impl NotchController {
     }
 
     fn handle_intent(&mut self, intent: UserIntent) {
+        use UserIntent::*;
+        let page = match &intent {
+            RevealQuickShare => Some(NotchPage::QuickShare),
+            CalendarMove(_)
+            | StartTask(_)
+            | SnoozeReminder
+            | AddTask { .. }
+            | RenameTask { .. }
+            | ToggleTask(_)
+            | DeleteTask(_)
+            | ToggleVoiceCapture => Some(NotchPage::Todo),
+            ToggleFocus | SelectFocusPhase(_) | ResetFocus | StartFocusFromReminder => {
+                Some(NotchPage::Pomodoro)
+            }
+            DrinkWater | ResetWater => Some(NotchPage::Water),
+            AddShelfText(_) | BrowseShelfFiles | OpenShelfItem(_) | RemoveShelfItem(_)
+            | ClearShelf => Some(NotchPage::Shelf),
+            ToggleLyrics | Media(_) | SeekToFraction(_) | SeekToLyric(_) => Some(NotchPage::Music),
+            _ => None,
+        };
+        if page.is_some_and(|page| !self.desktop.pages.contains(page)) {
+            return;
+        }
         match intent {
             UserIntent::RevealQuickShare => {
                 if !self.is_text_editing
@@ -382,10 +425,14 @@ impl NotchController {
             UserIntent::LockInteraction(is_locked) => self.on_lock_interaction(is_locked),
             UserIntent::ShowPage(page) => self.show_page(page),
             UserIntent::NextPage => {
-                self.show_page(self.context.page.step(1, self.desktop.widgets.enabled))
+                if let Some(page) = self.desktop.pages.step(self.context.page, 1) {
+                    self.show_page(page);
+                }
             }
             UserIntent::PreviousPage => {
-                self.show_page(self.context.page.step(-1, self.desktop.widgets.enabled))
+                if let Some(page) = self.desktop.pages.step(self.context.page, -1) {
+                    self.show_page(page);
+                }
             }
             UserIntent::ToggleLyrics => self.toggle_lyrics(),
             UserIntent::Media(command) => self.services.media.execute(command),
@@ -425,6 +472,13 @@ impl NotchController {
     }
 
     fn on_file_drag_hover(&mut self, hover: Option<DropHover>) {
+        let hover = hover.filter(|hover| match hover {
+            DropHover::Text => self.desktop.pages.contains(NotchPage::Shelf),
+            DropHover::Files(_) => {
+                self.desktop.pages.contains(NotchPage::Shelf)
+                    || self.desktop.pages.contains(NotchPage::QuickShare)
+            }
+        });
         self.mark_activity();
         let is_hover = hover.is_some();
         self.context.is_choosing_drop_destination = matches!(hover, Some(DropHover::Files(_)));
@@ -447,12 +501,14 @@ impl NotchController {
     fn on_files_dropped(&mut self, paths: Vec<PathBuf>, destination: FileDropDestination) {
         self.on_file_drag_hover(None);
         match destination {
-            FileDropDestination::Shelf => {
+            FileDropDestination::Shelf if self.desktop.pages.contains(NotchPage::Shelf) => {
                 self.reveal_shelf_briefly();
                 let result = self.services.shelf.add_paths(&paths);
                 self.after_shelf_mutation(result);
             }
-            FileDropDestination::QuickShare => {
+            FileDropDestination::QuickShare
+                if self.desktop.pages.contains(NotchPage::QuickShare) =>
+            {
                 self.context.page = NotchPage::QuickShare;
                 self.hover.reveal_for(Instant::now(), POST_DROP_VISIBLE_FOR);
                 self.presenter.apply(ViewUpdate::QuickShareStaged);
@@ -461,10 +517,14 @@ impl NotchController {
                     .quick_share
                     .send(super::quick_share::Command::Stage(paths));
             }
+            _ => {}
         }
     }
 
     fn on_files_picked(&mut self, paths: &[PathBuf]) {
+        if !self.desktop.pages.contains(NotchPage::Shelf) {
+            return;
+        }
         self.reveal_shelf_briefly();
         let result = self.services.shelf.add_paths(paths);
         self.after_shelf_mutation(result);
@@ -568,16 +628,18 @@ impl NotchController {
     }
 
     fn publish_calendar(&self) {
+        if !self.desktop.pages.contains(NotchPage::Todo)
+            && !self.desktop.pages.contains(NotchPage::Widgets)
+        {
+            return;
+        }
         if let Some(grid) = crate::domain::calendar::calendar_grid(
             Local::now().date_naive(),
             self.calendar_offset,
             self.desktop.calendar_starts_monday,
             self.desktop.calendar_week_view,
         ) {
-            self.presenter.apply(ViewUpdate::Calendar {
-                grid,
-                tasks: self.services.todo.tasks().to_vec(),
-            });
+            self.presenter.apply(ViewUpdate::Calendar(grid));
         }
     }
 
@@ -594,6 +656,9 @@ impl NotchController {
     }
 
     fn show_reminder(&mut self, notice: ReminderNotice) {
+        if !self.desktop.pages.contains(notice.page) {
+            return;
+        }
         self.reminders.remember(&notice);
         if !self.context.is_hovered && !self.context.is_interaction_locked {
             self.context.page = notice.page;
@@ -624,6 +689,9 @@ impl NotchController {
     }
 
     fn on_transcribed(&mut self, result: Result<String, PortError>) {
+        if !self.desktop.pages.contains(NotchPage::Todo) {
+            return;
+        }
         self.mark_activity();
         self.keep_mascot_awake(Instant::now());
         if let Some(text) = self.services.voice.on_transcribed(result) {
@@ -657,7 +725,7 @@ impl NotchController {
     }
 
     fn show_page(&mut self, page: NotchPage) {
-        if page == NotchPage::Widgets && !self.desktop.widgets.enabled {
+        if !self.desktop.pages.contains(page) {
             return;
         }
         self.context.page = page;
@@ -680,6 +748,7 @@ impl NotchController {
             && status.is_plugged_in
             && status.has_battery
             && self.desktop.popup_battery
+            && self.desktop.pages.contains(NotchPage::Charging)
         {
             self.show_peek(Peek::Charging);
         }
@@ -696,20 +765,50 @@ impl NotchController {
     }
 
     fn apply_settings(&mut self, settings: &AppSettings) {
-        if !settings.is_lyrics_enabled {
+        let pages = &settings.desktop.pages;
+        let lyrics = settings.is_lyrics_enabled && pages.contains(NotchPage::Music);
+        if !lyrics {
             self.context.is_lyrics_mode = false;
             self.presenter.apply(ViewUpdate::LyricsMode(false));
+        }
+        if self.context.peek == Some(Peek::Charging) && !pages.contains(NotchPage::Charging)
+            || self.context.peek == Some(Peek::Headphones) && !pages.contains(NotchPage::Headphones)
+            || self.context.is_actionable_alert && !pages.contains(NotchPage::Pomodoro)
+        {
+            self.peek_until = None;
+            self.context.peek = None;
+            self.context.is_actionable_alert = false;
+        }
+        if !pages.contains(NotchPage::Pomodoro) {
+            self.reminders.reset_focus();
+        }
+        if !pages.contains(NotchPage::Todo) {
+            self.reminders.clear_task();
+        }
+        if !pages.contains(NotchPage::Shelf) {
+            self.services.shelf.show_images(&[]);
         }
         if self.desktop.calendar_week_view != settings.desktop.calendar_week_view {
             self.calendar_offset = 0;
         }
+        if self.desktop.hud_brightness != settings.desktop.hud_brightness {
+            self.brightness_seen = false;
+        }
+        if self.desktop.popup_wifi != settings.desktop.popup_wifi {
+            self.wifi = None;
+        }
         self.desktop = settings.desktop.clone();
-        if !self.desktop.widgets.enabled && self.context.page == NotchPage::Widgets {
-            self.context.page = NotchPage::Music;
+        self.context.no_pages = self.desktop.pages.enabled().is_empty();
+        if !self.desktop.pages.contains(self.context.page)
+            && let Some(page) = self.desktop.pages.enabled().first()
+        {
+            self.context.page = *page;
         }
         self.sounds = settings.reminders.sounds;
         self.reminders.configure(&settings.reminders);
-        self.services.water.configure(&settings.water, Local::now());
+        let mut water = settings.water.clone();
+        water.enabled &= pages.contains(NotchPage::Water);
+        self.services.water.configure(&water, Local::now());
         self.utility_state = None;
         self.water_state = None;
         self.voice_state = None;
@@ -723,10 +822,10 @@ impl NotchController {
             is_dozing: self.is_dozing,
             is_enabled: settings.is_mascot_enabled,
         });
+        self.services.media.set_lyrics_enabled(lyrics);
         self.services
-            .media
-            .set_lyrics_enabled(settings.is_lyrics_enabled);
-        self.services.voice.configure(settings.wyoming.is_enabled);
+            .voice
+            .configure(settings.wyoming.is_enabled && pages.contains(NotchPage::Todo));
     }
 
     fn mark_activity(&mut self) {
@@ -840,7 +939,7 @@ impl NotchController {
                 Ok(false) => {}
                 Err(error) => self.show_hud(error.message_key(), String::new(), None),
             }
-            if self.reminders.task_start_enabled() {
+            if self.reminders.task_start_enabled() && self.desktop.pages.contains(NotchPage::Todo) {
                 let due: Vec<_> = self
                     .services
                     .todo
@@ -921,6 +1020,7 @@ impl NotchController {
     }
 
     fn next_wake(&self, now: Instant) -> Instant {
+        let wall = Local::now();
         let clock = now + seconds_to_next_minute();
         let rest = (!self.context.is_quiet).then(|| self.last_activity + self.rest_after);
         let doze = (!self.is_dozing && !self.cursor_near_mascot).then(|| {
@@ -937,8 +1037,13 @@ impl NotchController {
             self.peek_until,
             self.hover.deadline(),
             self.services.voice.deadline(),
-            (self.reminders.needs_tick() || self.services.water.state(Local::now()).enabled)
+            self.reminders
+                .needs_tick()
                 .then_some(now + Duration::from_secs(1)),
+            self.services
+                .water
+                .deadline()
+                .map(|deadline| now + (deadline - wall).to_std().unwrap_or_default()),
         ]
         .into_iter()
         .flatten()

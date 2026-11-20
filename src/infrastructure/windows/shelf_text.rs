@@ -1,4 +1,6 @@
 use crate::application::events::{AppEvent, DropHover, EventSender, FileDropDestination};
+use crate::application::settings::AppSettings;
+use crate::domain::notch::NotchPage;
 use crate::domain::ports::PortError;
 use std::cell::Cell;
 use std::os::windows::ffi::OsStringExt;
@@ -111,6 +113,7 @@ struct ShelfDropTarget {
     events: EventSender,
     hwnd: HWND,
     file_zones: FileDropZones,
+    settings: tokio::sync::watch::Receiver<AppSettings>,
     hover: Cell<Option<DropHover>>,
 }
 
@@ -176,20 +179,30 @@ impl IDropTarget_Impl for ShelfDropTarget_Impl {
         point: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
-        let hover =
-            if !allows_copy(unsafe { *effect }) || super::shelf_drag::is_outbound_drag_active() {
-                None
-            } else {
-                data.as_ref().and_then(|data| unsafe {
-                    if data.QueryGetData(&format(CF_HDROP.0)).is_ok() {
-                        Some(DropHover::Files(self.destination_at(point)))
-                    } else if data.QueryGetData(&format(CF_UNICODETEXT.0)).is_ok() {
-                        Some(DropHover::Text)
-                    } else {
-                        None
-                    }
-                })
-            };
+        let (shelf, share) = {
+            let settings = self.settings.borrow();
+            let pages = &settings.desktop.pages;
+            (
+                pages.contains(NotchPage::Shelf),
+                pages.contains(NotchPage::QuickShare),
+            )
+        };
+        let hover = if !(shelf || share)
+            || !allows_copy(unsafe { *effect })
+            || super::shelf_drag::is_outbound_drag_active()
+        {
+            None
+        } else {
+            data.as_ref().and_then(|data| unsafe {
+                if data.QueryGetData(&format(CF_HDROP.0)).is_ok() {
+                    Some(DropHover::Files(self.destination_at(point)))
+                } else if shelf && data.QueryGetData(&format(CF_UNICODETEXT.0)).is_ok() {
+                    Some(DropHover::Text)
+                } else {
+                    None
+                }
+            })
+        };
         self.update_hover(hover);
         unsafe {
             *effect = drop_effect(hover);
@@ -285,11 +298,13 @@ pub fn install_drop_target(
     hwnd: HWND,
     events: EventSender,
     file_zones: FileDropZones,
+    settings: tokio::sync::watch::Receiver<AppSettings>,
 ) -> Result<(), PortError> {
     let target: IDropTarget = ShelfDropTarget {
         hwnd,
         events,
         file_zones,
+        settings,
         hover: Cell::default(),
     }
     .into();

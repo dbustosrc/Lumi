@@ -21,7 +21,7 @@ Lumi requires Windows 10 or 11 on x64 with hardware graphics support. If Windows
 - **Quick Share.** Send files to and receive files from nearby Android devices from the notch.
 - **Mimo.** The mascot reacts to the cursor, Bluetooth headphones, and Windows notification banners in the compact notch.
 - **Cursor activity.** Enable an activity event every 30 seconds from Settings or the tray. The cursor stays in place, and the feature is off by default.
-- **Desktop settings.** Choose hover or click to expand, select a monitor and scale, and configure full-screen hiding and system indicators. The interface is available in English and Spanish.
+- **Desktop settings.** Drag to reorder notch pages or switch off pages you do not use. Choose hover or click to expand, select a monitor on the display map, and configure scale, motion blur, full-screen hiding, and system indicators. The interface is available in English and Spanish.
 
 ## Local data
 
@@ -36,6 +36,8 @@ Quick Share uses the [rquickshare native transport](https://github.com/asulwer/r
 ## Task API
 
 With Lumi running, open **Settings → To-do → Task API**, generate an access token, and copy it to your client. Tokens are valid until revoked. Lumi stores only their hashes and lets you revoke each token separately.
+
+The API is available while To-do is enabled in **Settings → Pages**.
 
 Send requests to `http://127.0.0.1:17642` from an application on the same PC. Every request needs `Authorization: Bearer <token>`. Send JSON with `Content-Type: application/json` for creates and updates.
 

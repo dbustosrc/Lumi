@@ -13,4 +13,6 @@ pub mod power;
 pub mod shelf_drag;
 pub mod shelf_text;
 pub mod system_tray;
+pub(super) mod thumbnail;
+mod volume;
 pub mod window_region;

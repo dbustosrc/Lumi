@@ -36,14 +36,17 @@ use crate::application::presenter::ViewUpdate;
 use crate::application::quick_share::Command as ShareCommand;
 use crate::application::settings::SettingsService;
 use crate::domain::background::{BackgroundDetection, BackgroundObservation};
-use crate::domain::notch::NotchView;
+use crate::domain::notch::{NotchPage, NotchView};
 use crate::infrastructure::task_tokens::TaskTokens;
 use crate::infrastructure::windows::system_tray::{
     TrayActionHandler, TrayMenuAction, TrayMenuChecks, TrayMenuLabels, Win32SystemTray,
 };
 use crate::infrastructure::windows::{
+    desktop_status::{self, BrightnessWatcher, CapsLockWatcher, WifiWatcher},
     fullscreen,
+    headphones::{HeadphonesWatcher, watch_headphones},
     notch_background::{BackgroundSampler, MonitorGeometry},
+    notifications::NotificationWatcher,
     shelf_drag, shelf_text,
 };
 
@@ -51,6 +54,7 @@ const WM_TRAY_ACTION: u32 = WM_APP + 0x11;
 pub const WM_ACCESSIBLE_ACTION: u32 = WM_APP + 0x12;
 const WATCH_TIMER: usize = 1;
 const FRAME_TIMER: usize = 2;
+const PAGE_DRAG_THRESHOLD_DIPS: f32 = 4.;
 #[derive(Clone)]
 enum Event {
     Paint(HWND),
@@ -126,6 +130,7 @@ pub struct NativeHost {
     scene: Scene,
     settings_scene: Scene,
     file_drop_zones: shelf_text::FileDropZones,
+    shelf_images: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>)>,
     local_transition: Option<(Scene, Instant)>,
     preference_transition: Option<(Scene, Instant)>,
     inputs: Inputs,
@@ -138,6 +143,12 @@ pub struct NativeHost {
     settings_visible: bool,
     notch_visible: bool,
     last_language: Option<String>,
+    last_language_id: Option<u32>,
+    caps_lock: Option<CapsLockWatcher>,
+    brightness: Option<BrightnessWatcher>,
+    wifi: Option<WifiWatcher>,
+    notifications: Option<NotificationWatcher>,
+    headphones: Option<HeadphonesWatcher>,
     settings_scroll_max: f32,
     tray: Win32SystemTray,
     background: BackgroundSampler,
@@ -222,8 +233,13 @@ impl NativeHost {
                 1.,
             )?;
             let file_drop_zones = shelf_text::FileDropZones::default();
-            shelf_text::install_drop_target(notch, events.clone(), file_drop_zones.clone())
-                .map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
+            shelf_text::install_drop_target(
+                notch,
+                events.clone(),
+                file_drop_zones.clone(),
+                settings.subscribe(),
+            )
+            .map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
             let callback: TrayActionHandler = Arc::new({
                 let raw = notch.0 as isize;
                 move |action| {
@@ -272,6 +288,7 @@ impl NativeHost {
                 scene: Scene::default(),
                 settings_scene: Scene::default(),
                 file_drop_zones,
+                shelf_images: Vec::new(),
                 local_transition: None,
                 preference_transition: None,
                 inputs: Inputs::default(),
@@ -284,6 +301,12 @@ impl NativeHost {
                 settings_visible: false,
                 notch_visible: false,
                 last_language: None,
+                last_language_id: None,
+                caps_lock: None,
+                brightness: None,
+                wifi: None,
+                notifications: None,
+                headphones: None,
                 settings_scroll_max: 0.,
                 tray,
                 background: BackgroundSampler::default(),
@@ -298,6 +321,7 @@ impl NativeHost {
                 settings_dirty: true,
                 edit_brushes,
             };
+            host.sync_watchers();
             host.position_notch()?;
             SetTimer(Some(notch), WATCH_TIMER, 100, None);
             host.paint()?;
@@ -333,7 +357,21 @@ impl NativeHost {
         unsafe {
             match event {
                 Event::Update => {
-                    for update in self.presenter.take() {
+                    let updates = self.presenter.take();
+                    for update in updates {
+                        self.dirty |= match update {
+                            ViewUpdate::Progress { .. } => {
+                                matches!(self.model.view, NotchView::Music | NotchView::Lyrics)
+                            }
+                            _ => true,
+                        };
+                        self.settings_dirty |= self.settings_visible
+                            && matches!(
+                                update,
+                                ViewUpdate::MouseMoveStatus(_)
+                                    | ViewUpdate::Utility(_)
+                                    | ViewUpdate::Water(_)
+                            );
                         if matches!(update, ViewUpdate::ReminderSound) {
                             let _ = windows::Win32::System::Diagnostics::Debug::MessageBeep(
                                 MB_ICONASTERISK,
@@ -351,8 +389,6 @@ impl NativeHost {
                             self.edit_lock(self.model.draft.is_some())?;
                         }
                     }
-                    self.dirty = true;
-                    self.settings_dirty = true;
                 }
                 Event::Paint(hwnd) => {
                     if hwnd == self.notch {
@@ -366,10 +402,7 @@ impl NativeHost {
                         self.watch()?;
                     } else {
                         self.dirty = true;
-                        self.settings_dirty = self.settings_visible
-                            && (self.form.changed.elapsed() < Duration::from_millis(230)
-                                || self.form.hover_changed.elapsed() < Duration::from_millis(155)
-                                || self.preference_transition.is_some());
+                        self.settings_dirty |= self.settings_animating();
                     }
                 }
                 Event::Display | Event::Setting => {
@@ -427,7 +460,7 @@ impl NativeHost {
                             Rect::new(body.x, body.y, body.w, body.h.max(10.)).contains(x, y);
                         self.set_hover(inside);
                         let nav_width = if self.model.nav {
-                            expanded_nav_width(self.model.settings.desktop.widgets.enabled)
+                            expanded_nav_width(self.model.settings.desktop.pages.enabled().len())
                         } else {
                             COLLAPSED_NAV_WIDTH
                         };
@@ -469,7 +502,18 @@ impl NativeHost {
                     };
                     SetCursor(Some(LoadCursorW(
                         None,
-                        if actionable { IDC_HAND } else { IDC_ARROW },
+                        if hwnd == self.settings_window
+                            && self.form.page_drag.is_some()
+                            && self.pressed.as_ref().is_some_and(|(_, action, _)| {
+                                matches!(action, Action::ReorderPage(_))
+                            })
+                        {
+                            IDC_SIZENS
+                        } else if actionable {
+                            IDC_HAND
+                        } else {
+                            IDC_ARROW
+                        },
                     )?));
                     if let Some((owner, action, start)) = self.pressed.clone() {
                         if owner == hwnd {
@@ -477,6 +521,18 @@ impl NativeHost {
                                 self.slide(&action, x, y);
                             } else if action == Action::ScrollSettings {
                                 self.scroll_settings(y);
+                            } else if let Action::ReorderPage(page) = action {
+                                if self.form.page_drag.is_some()
+                                    || (y - start.1).abs() >= PAGE_DRAG_THRESHOLD_DIPS
+                                {
+                                    self.form.track_page_drag(
+                                        &self.model.settings.desktop.pages,
+                                        page,
+                                        self.page_at(x, y),
+                                        y - start.1,
+                                        Instant::now(),
+                                    );
+                                }
                             } else if let Action::DragShelf(id) | Action::DragSharedFile(id) =
                                 action
                             {
@@ -517,6 +573,9 @@ impl NativeHost {
                     }
                 }
                 Event::Down(hwnd, x, y) => {
+                    if hwnd == self.settings_window {
+                        self.cancel_page_drag();
+                    }
                     self.collect_fields(hwnd);
                     let scale = if hwnd == self.notch {
                         self.scale
@@ -561,13 +620,21 @@ impl NativeHost {
                         self.settings_scale
                     };
                     let (x, y) = (x / scale, y / scale);
-                    if let Some((owner, action, _)) = self.pressed.take() {
+                    if let Some((owner, action, start)) = self.pressed.take() {
                         if owner == hwnd
                             && !matches!(
                                 action,
                                 Action::Seek | Action::Volume | Action::ScrollSettings
                             )
                         {
+                            if let Action::ReorderPage(page) = action {
+                                let dragged = self.cancel_page_drag()
+                                    || (y - start.1).abs() >= PAGE_DRAG_THRESHOLD_DIPS;
+                                if dragged && let Some(target) = self.page_at(x, y) {
+                                    self.reorder_page(page, target)?;
+                                }
+                                return Ok(());
+                            }
                             let scene = if hwnd == self.notch {
                                 &self.scene
                             } else {
@@ -589,19 +656,16 @@ impl NativeHost {
                 }
                 Event::Wheel(hwnd, delta) => {
                     if hwnd == self.settings_window {
-                        self.collect_fields(hwnd);
-                        if self.form.section == 1 {
-                            self.form.screen_scroll = (self.form.screen_scroll - delta * 80.)
-                                .clamp(
-                                    0.,
-                                    (self.displays.len() as f32 * 174.
-                                        - (self.settings_size.0 - 260.))
-                                        .max(0.),
-                                );
-                        } else {
-                            self.form.scroll = (self.form.scroll - delta * 35.)
-                                .clamp(0., self.settings_scroll_max);
+                        if self
+                            .pressed
+                            .as_ref()
+                            .is_some_and(|(_, action, _)| matches!(action, Action::ReorderPage(_)))
+                        {
+                            return Ok(());
                         }
+                        self.collect_fields(hwnd);
+                        self.form.scroll =
+                            (self.form.scroll - delta * 35.).clamp(0., self.settings_scroll_max);
                         self.settings_dirty = true;
                     } else {
                         match self.model.view {
@@ -645,6 +709,9 @@ impl NativeHost {
                         .is_some_and(|(owner, _, _)| *owner == hwnd)
                     {
                         self.pressed = None;
+                        if hwnd == self.settings_window {
+                            self.cancel_page_drag();
+                        }
                     }
                 }
                 Event::Commit(hwnd, blur) => {
@@ -698,12 +765,32 @@ impl NativeHost {
                 Event::Key(hwnd, key) => {
                     if key == VK_ESCAPE.0 as usize {
                         if hwnd == self.settings_window {
-                            self.hide_settings();
+                            if !self.cancel_page_drag() {
+                                self.hide_settings();
+                            }
                         } else {
                             self.action(Action::CancelTask, hwnd)?;
                         }
                     } else if key == VK_TAB.0 as usize {
                         self.tab(hwnd, GetKeyState(VK_SHIFT.0 as i32) < 0);
+                    } else if hwnd == self.settings_window
+                        && self.pressed.is_none()
+                        && (key == VK_UP.0 as usize || key == VK_DOWN.0 as usize)
+                        && let Some(Action::ReorderPage(page)) = self
+                            .settings_access
+                            .as_ref()
+                            .and_then(|access| access.focused_action())
+                    {
+                        let pages = self.model.settings.desktop.pages.enabled();
+                        let step = if key == VK_UP.0 as usize { -1 } else { 1 };
+                        if let Some(target) = pages
+                            .iter()
+                            .position(|item| *item == page)
+                            .and_then(|index| index.checked_add_signed(step))
+                            .and_then(|index| pages.get(index))
+                        {
+                            self.reorder_page(page, *target)?;
+                        }
                     } else if key == VK_RETURN.0 as usize || key == VK_SPACE.0 as usize {
                         let access = if hwnd == self.notch {
                             Some(self.access.clone())
@@ -902,6 +989,41 @@ impl NativeHost {
             self.settings_dirty = true;
         }
     }
+    fn page_at(&self, x: f32, y: f32) -> Option<NotchPage> {
+        self.settings_scene
+            .hits
+            .iter()
+            .find_map(|hit| match hit.action {
+                Action::ReorderPage(page) if hit.rect.contains(x, y) => Some(page),
+                _ => None,
+            })
+    }
+    fn cancel_page_drag(&mut self) -> bool {
+        let captured = self.pressed.as_ref().is_some_and(|(owner, action, _)| {
+            *owner == self.settings_window && matches!(action, Action::ReorderPage(_))
+        });
+        if captured {
+            self.pressed = None;
+            let _ = unsafe { ReleaseCapture() };
+        }
+        let cancelled = self.form.page_drag.take().is_some() || captured;
+        if cancelled {
+            self.form
+                .settle_pages(&self.model.settings.desktop.pages, Instant::now());
+        }
+        self.settings_dirty |= cancelled;
+        cancelled
+    }
+    fn reorder_page(&mut self, page: NotchPage, target: NotchPage) -> Result<()> {
+        self.cancel_page_drag();
+        let mut next = self.settings.current();
+        if next.desktop.pages.move_page(page, target) {
+            self.save_settings(next)?;
+            self.form
+                .settle_pages(&self.model.settings.desktop.pages, Instant::now());
+        }
+        Ok(())
+    }
     fn action(&mut self, action: Action, owner: HWND) -> Result<()> {
         if (self.model.fullscreen || fullscreen::foreground_is_fullscreen())
             && matches!(
@@ -930,7 +1052,9 @@ impl NativeHost {
         {
             self.local_transition = Some((self.scene.clone(), Instant::now()));
         }
-        if owner == self.settings_window && matches!(action, Action::Preference(..)) {
+        if owner == self.settings_window
+            && matches!(action, Action::Preference(key, _) if !key.is_boolean())
+        {
             self.preference_transition = Some((self.settings_scene.clone(), Instant::now()));
         }
         match action {
@@ -959,12 +1083,33 @@ impl NativeHost {
                 self.task_token_action(action);
             }
             Action::Section(section) => {
+                if !settings::section_available(section, &self.model.settings) {
+                    return Ok(());
+                }
                 self.collect_fields(self.settings_window);
+                self.cancel_page_drag();
                 self.form.section = section;
                 self.form.notices = None;
                 self.form.changed = Instant::now();
                 self.form.scroll = 0.;
                 self.settings_dirty = true;
+            }
+            Action::TogglePage(page) => {
+                self.cancel_page_drag();
+                let mut next = self.settings.current();
+                next.desktop.pages.toggle(page);
+                self.save_settings(next)?;
+            }
+            Action::ReorderPage(page) => {
+                if self.form.section != settings::PAGES {
+                    return Ok(());
+                }
+                if let Some((source, _)) = self.form.page_drag {
+                    self.reorder_page(source, page)?;
+                } else if self.model.settings.desktop.pages.contains(page) {
+                    self.form.page_drag = Some((page, None));
+                    self.settings_dirty = true;
+                }
             }
             Action::OpenNotices | Action::OpenNotice(_) | Action::BackNotices => {
                 use settings::NoticesPage;
@@ -1296,10 +1441,48 @@ impl NativeHost {
             Ok(()) => {
                 let current = self.settings.current();
                 crate::i18n::select_language(current.language, self.system_locale.as_deref());
+                if self.settings_visible {
+                    let before = &self.model.settings;
+                    let now = Instant::now();
+                    for hit in &self.settings_scene.hits {
+                        let (action, from, to) = match hit.action {
+                            Action::Preference(key, _) if key.is_boolean() => (
+                                Action::Preference(key, 0),
+                                key.value(before) != 0,
+                                key.value(&current) != 0,
+                            ),
+                            Action::TogglePage(page) => (
+                                Action::TogglePage(page),
+                                before.desktop.pages.contains(page),
+                                current.desktop.pages.contains(page),
+                            ),
+                            _ => continue,
+                        };
+                        if from != to {
+                            self.form.animate_switch(action, from, to, now);
+                        }
+                    }
+                }
+                let pages = &current.desktop.pages;
+                if !pages.contains(NotchPage::Shelf)
+                    && self.model.settings.desktop.pages.contains(NotchPage::Shelf)
+                {
+                    self.shelf_images.clear();
+                    for entry in &mut self.model.shelf {
+                        entry.thumbnail = None;
+                    }
+                    if self.model.shelf_text_open {
+                        self.action(Action::CancelShelfText, self.notch)?;
+                    }
+                }
+                if !pages.contains(NotchPage::Todo) && self.model.draft.is_some() {
+                    self.action(Action::CancelTask, self.notch)?;
+                }
                 self.model.settings = current.clone();
                 self.model.mascot = current.is_mascot_enabled;
                 self.tray.update(labels(), checks(&current));
                 let _ = self.events.send(AppEvent::SettingsChanged(current));
+                self.sync_watchers();
                 self.position_notch()?;
                 self.form.status = crate::i18n::translate("settings.status.saved");
                 self.form.error = false;
@@ -1316,6 +1499,31 @@ impl NativeHost {
         self.model.water_error = Some(key);
         self.settings_dirty = true;
         self.dirty = true;
+    }
+
+    fn sync_watchers(&mut self) {
+        let desktop = &self.model.settings.desktop;
+        sync_watcher(
+            &mut self.headphones,
+            desktop.pages.contains(NotchPage::Headphones) || self.model.mascot,
+            || watch_headphones(self.events.clone()),
+        );
+        sync_watcher(&mut self.caps_lock, desktop.hud_caps_lock, || {
+            CapsLockWatcher::install(self.events.clone())
+        });
+        sync_watcher(&mut self.brightness, desktop.hud_brightness, || {
+            BrightnessWatcher::start(self.events.clone())
+        });
+        sync_watcher(&mut self.wifi, desktop.popup_wifi, || {
+            WifiWatcher::start(self.events.clone())
+        });
+        sync_watcher(&mut self.notifications, self.model.mascot, || {
+            NotificationWatcher::start(self.events.clone())
+        });
+        if !desktop.hud_input_language {
+            self.last_language_id = None;
+            self.last_language = None;
+        }
     }
     fn open_settings(&mut self) -> Result<()> {
         unsafe {
@@ -1336,9 +1544,11 @@ impl NativeHost {
                 self.settings_scale = monitor
                     .scale
                     .min(monitor.work.w / 654.)
-                    .min(monitor.work.h / 360.);
+                    .min(monitor.work.h / settings::SETTINGS_MIN_HEIGHT);
                 let w = (654. * self.settings_scale).min(monitor.work.w) as i32;
-                let h = (506. * self.settings_scale).min(monitor.work.h) as i32;
+                let h = (506_f32.max(settings::SETTINGS_MIN_HEIGHT) * self.settings_scale)
+                    .ceil()
+                    .min(monitor.work.h) as i32;
                 self.settings_size = (
                     w as f32 / self.settings_scale,
                     h as f32 / self.settings_scale,
@@ -1374,11 +1584,15 @@ impl NativeHost {
                         .cast(),
                     size_of_val(&corner) as u32,
                 );
+            }
+            if self.settings_surface.is_none() {
+                let mut rect = RECT::default();
+                GetClientRect(self.settings_window, &mut rect)?;
                 self.settings_surface = Some(Surface::new(
                     self.surface.device.clone(),
                     self.settings_window,
-                    w as u32,
-                    h as u32,
+                    (rect.right - rect.left).max(1) as u32,
+                    (rect.bottom - rect.top).max(1) as u32,
                     self.settings_scale,
                 )?);
             }
@@ -1394,6 +1608,7 @@ impl NativeHost {
         }
     }
     fn hide_settings(&mut self) {
+        self.cancel_page_drag();
         self.form.issued_token = None;
         self.form.api_notice = None;
         self.collect_fields(self.settings_window);
@@ -1404,6 +1619,9 @@ impl NativeHost {
         unsafe {
             let _ = ShowWindow(self.settings_window, SW_HIDE);
         }
+        self.settings_surface = None;
+        self.settings_scene = Scene::default();
+        self.preference_transition = None;
     }
     fn position_notch(&mut self) -> Result<()> {
         unsafe {
@@ -1548,7 +1766,10 @@ impl NativeHost {
             }
             self.model.shelf_removal.expire(now);
             self.model.quick_share_ui.expire_removals(now);
-            if let Some(language) = crate::infrastructure::windows::desktop_status::input_language()
+            if self.model.settings.desktop.hud_input_language
+                && let Some(id) = desktop_status::input_language()
+                && self.last_language_id != Some(id)
+                && let Some(language) = desktop_status::language_name(id)
             {
                 if self
                     .last_language
@@ -1557,6 +1778,7 @@ impl NativeHost {
                 {
                     let _ = self.events.send(AppEvent::InputLanguage(language.clone()));
                 }
+                self.last_language_id = Some(id);
                 self.last_language = Some(language);
             }
             Ok(())
@@ -1584,6 +1806,13 @@ impl NativeHost {
             result => result,
         }
     }
+    fn settings_animating(&self) -> bool {
+        self.settings_visible
+            && (self.form.changed.elapsed() < Duration::from_millis(230)
+                || self.form.hover_changed.elapsed() < Duration::from_millis(155)
+                || self.preference_transition.is_some()
+                || self.form.controls_animating())
+    }
     fn draw_frame(&mut self) -> Result<()> {
         let now = Instant::now();
         let suppressed = self.selected.is_none()
@@ -1598,7 +1827,13 @@ impl NativeHost {
             } else {
                 0.26
             };
-            self.scene = views::notch_scene(&self.model, self.model.view, now);
+            let previous_scene = std::mem::replace(
+                &mut self.scene,
+                views::notch_scene(&self.model, self.model.view, now),
+            );
+            if self.model.view == NotchView::Shelf {
+                self.request_visible_shelf_images();
+            }
             let old_scene = (elapsed < page_motion && self.model.previous_view != self.model.view)
                 .then(|| views::notch_scene(&self.model, self.model.previous_view, now));
 
@@ -1642,13 +1877,27 @@ impl NativeHost {
                 self.region = Some(region_key);
             }
             self.surface.set_glass(wants_glass)?;
-            self.access.update(&self.scene, &self.model, self.scale);
+            self.access
+                .update(&self.scene, &previous_scene, &self.model, self.scale);
             if let Some((owner, _, rect)) = self.keyboard_focus {
                 if owner == self.notch {
                     self.scene.border(rect.inset(-1.), 4., 0xffffff, 1.);
                 }
             }
             self.surface.begin(None);
+            let slide = is_expanded(self.model.previous_view) && self.model.expanded();
+            let blend = cubic_bezier((elapsed / page_motion).clamp(0., 1.), 0.42, 0., 0.58, 1.);
+            let deviation = if self.model.settings.desktop.appearance.motion_blur
+                && old_scene.is_some()
+                && self.model.expanded()
+            {
+                5.5 * (1. - blend * blend)
+            } else {
+                0.
+            };
+            let blur = deviation > 0.3;
+            self.surface
+                .prepare_motion_blur(&self.scene.paint, if blur { deviation } else { 0. })?;
             let tint = if self.model.view == NotchView::FileDrop {
                 0.65
             } else if wants_glass {
@@ -1658,8 +1907,6 @@ impl NativeHost {
             };
             self.surface.styled_shell(shell, floating, tint)?;
             self.surface.clip_shell()?;
-            let slide = is_expanded(self.model.previous_view) && self.model.expanded();
-            let blend = cubic_bezier((elapsed / page_motion).clamp(0., 1.), 0.42, 0., 0.58, 1.);
             if let Some(old) = &old_scene {
                 self.surface.paint(
                     &old.paint,
@@ -1690,18 +1937,17 @@ impl NativeHost {
             } else {
                 1.
             };
-            self.surface.paint(
-                &self.scene.paint,
-                alpha * local_alpha,
-                (
-                    if slide && elapsed < page_motion {
-                        self.model.page_direction * (1. - blend) * 24.
-                    } else {
-                        0.
-                    },
-                    0.,
-                ),
-            )?;
+            let x = if slide && elapsed < page_motion {
+                self.model.page_direction * (1. - blend) * 24.
+            } else {
+                0.
+            };
+            let opacity = alpha * local_alpha;
+            if blur {
+                self.surface.draw_motion_blur(opacity, (x, 0.))?;
+            } else {
+                self.surface.paint(&self.scene.paint, opacity, (x, 0.))?;
+            }
             self.surface.unclip_shell();
             if let Some(old) = &old_scene
                 && !old.overlay.is_empty()
@@ -1722,18 +1968,21 @@ impl NativeHost {
             self.surface.end()?;
             let zones = if self.model.view == NotchView::FileDrop {
                 let target_body = Shell::for_view(self.model.view, self.model.nav).body();
-                views::file_drop_zones(target_body).map(|(destination, rect)| {
-                    let rect = rect.intersect(shell.body());
-                    (rect.w > 0. && rect.h > 0.).then_some((
-                        destination,
-                        RECT {
-                            left: (rect.x * self.scale).ceil() as i32,
-                            top: (rect.y * self.scale).ceil() as i32,
-                            right: ((rect.x + rect.w) * self.scale).ceil() as i32,
-                            bottom: ((rect.y + rect.h) * self.scale).ceil() as i32,
-                        },
-                    ))
-                })
+                views::enabled_file_drop_zones(target_body, &self.model.settings.desktop.pages).map(
+                    |zone| {
+                        let (destination, rect) = zone?;
+                        let rect = rect.intersect(shell.body());
+                        (rect.w > 0. && rect.h > 0.).then_some((
+                            destination,
+                            RECT {
+                                left: (rect.x * self.scale).ceil() as i32,
+                                top: (rect.y * self.scale).ceil() as i32,
+                                right: ((rect.x + rect.w) * self.scale).ceil() as i32,
+                                bottom: ((rect.y + rect.h) * self.scale).ceil() as i32,
+                            },
+                        ))
+                    },
+                )
             } else {
                 [None; 2]
             };
@@ -1752,6 +2001,7 @@ impl NativeHost {
             self.dirty = false;
         }
         if self.settings_visible && self.settings_dirty {
+            self.form.update_motions(now);
             let (scene, max_scroll) = settings::settings_scene(
                 &self.model,
                 &self.form,
@@ -1762,12 +2012,23 @@ impl NativeHost {
             );
             self.settings_scroll_max = max_scroll;
             self.form.scroll = self.form.scroll.min(max_scroll);
-            self.settings_scene = scene;
             if let Some(access) = &self.settings_access {
-                access.update(&self.settings_scene, &self.model, self.settings_scale);
+                access.update(
+                    &scene,
+                    &self.settings_scene,
+                    &self.model,
+                    self.settings_scale,
+                );
             }
-            if let Some((owner, _, rect)) = self.keyboard_focus {
-                if owner == self.settings_window {
+            self.settings_scene = scene;
+            if let Some((owner, id, _)) = self.keyboard_focus
+                && owner == self.settings_window
+            {
+                self.keyboard_focus = self
+                    .settings_access
+                    .as_ref()
+                    .and_then(|access| access.set_focus(id).map(|rect| (owner, id, rect)));
+                if let Some((_, _, rect)) = self.keyboard_focus {
                     self.settings_scene.border(
                         rect.inset(-1.),
                         4.,
@@ -1815,10 +2076,7 @@ impl NativeHost {
             self.preference_transition = None;
         }
         let animate = !suppressed && (self.model.animating(now) || self.local_transition.is_some())
-            || self.settings_visible
-                && (self.form.changed.elapsed() < Duration::from_millis(230)
-                    || self.form.hover_changed.elapsed() < Duration::from_millis(155)
-                    || self.preference_transition.is_some());
+            || self.settings_animating();
         if animate != self.frame_timer {
             unsafe {
                 if animate {
@@ -1831,9 +2089,43 @@ impl NativeHost {
         }
         Ok(())
     }
+
+    fn request_visible_shelf_images(&mut self) {
+        let images: Vec<_> = self
+            .scene
+            .hits
+            .iter()
+            .filter_map(|hit| {
+                let Action::DragShelf(id) = hit.action else {
+                    return None;
+                };
+                self.model
+                    .shelf
+                    .iter()
+                    .find(|entry| entry.item.id == id && entry.item.is_decodable_image())
+                    .map(|entry| (id, entry.item.added_at))
+            })
+            .collect();
+        if images != self.shelf_images {
+            for entry in &mut self.model.shelf {
+                if entry.thumbnail.is_some() && !images.iter().any(|(id, _)| *id == entry.item.id) {
+                    entry.thumbnail = None;
+                }
+            }
+            let _ = self.events.send(AppEvent::ShelfImagesVisible(
+                images.iter().map(|(id, _)| *id).collect(),
+            ));
+            self.shelf_images = images;
+        }
+    }
 }
 impl Drop for NativeHost {
     fn drop(&mut self) {
+        self.wifi = None;
+        self.brightness = None;
+        self.caps_lock = None;
+        self.notifications = None;
+        self.settings_surface = None;
         self.access.close();
         if let Some(access) = &self.settings_access {
             access.close();
@@ -1867,6 +2159,22 @@ fn labels() -> TrayMenuLabels {
         quit: crate::i18n::translate("tray.menu.quit"),
     }
 }
+fn sync_watcher<T, E: std::fmt::Display>(
+    watcher: &mut Option<T>,
+    enabled: bool,
+    start: impl FnOnce() -> std::result::Result<T, E>,
+) {
+    if !enabled {
+        *watcher = None;
+    } else if watcher.is_none() {
+        *watcher = start()
+            .inspect_err(|error| {
+                tracing::warn!(event = "log.hud.initializeFailed", error = %error);
+            })
+            .ok();
+    }
+}
+
 fn checks(s: &crate::application::settings::AppSettings) -> TrayMenuChecks {
     TrayMenuChecks {
         is_minimal_notch: s.is_minimal_notch,
@@ -1886,7 +2194,7 @@ fn settings_scale(hwnd: HWND) -> Result<f32> {
         }
         Ok((GetDpiForWindow(hwnd) as f32 / 96.)
             .min((info.rcWork.right - info.rcWork.left) as f32 / 654.)
-            .min((info.rcWork.bottom - info.rcWork.top) as f32 / 360.))
+            .min((info.rcWork.bottom - info.rcWork.top) as f32 / settings::SETTINGS_MIN_HEIGHT))
     }
 }
 fn enumerate_displays() -> Result<Vec<Display>> {
@@ -1973,7 +2281,7 @@ unsafe extern "system" fn window_proc(
                     let info = &mut *(lparam.0 as *mut MINMAXINFO);
                     info.ptMinTrackSize = POINT {
                         x: (654. * scale).ceil() as i32,
-                        y: (360. * scale).ceil() as i32,
+                        y: (settings::SETTINGS_MIN_HEIGHT * scale).ceil() as i32,
                     };
                 }
                 LRESULT(0)

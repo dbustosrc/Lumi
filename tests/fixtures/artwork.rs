@@ -80,3 +80,35 @@ fn websocket_origins_normalize_only_to_their_secure_http_counterpart() {
         None
     );
 }
+
+#[test]
+fn thumbnail_decodes_png_jpeg_and_webp_to_bounded_rgba() {
+    use image::{DynamicImage, ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
+    use std::io::Cursor;
+
+    let cases = [
+        (
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 4, Rgba([24, 48, 72, 64]))),
+            ImageFormat::Png,
+            64,
+        ),
+        (
+            DynamicImage::ImageRgb8(RgbImage::from_pixel(8, 4, Rgb([24, 48, 72]))),
+            ImageFormat::Jpeg,
+            255,
+        ),
+        (
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 4, Rgba([24, 48, 72, 64]))),
+            ImageFormat::WebP,
+            64,
+        ),
+    ];
+
+    for (image, format, alpha) in cases {
+        let mut bytes = Cursor::new(Vec::new());
+        image.write_to(&mut bytes, format).unwrap();
+        let thumbnail = super::super::windows::thumbnail::from_bytes(bytes.get_ref(), 4).unwrap();
+        assert_eq!(thumbnail.dimensions(), (4, 2));
+        assert_eq!(thumbnail.get_pixel(2, 1).0[3], alpha);
+    }
+}

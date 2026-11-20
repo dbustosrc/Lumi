@@ -16,6 +16,7 @@ pub struct VoiceCapture {
     events: EventSender,
     state: VoiceState,
     failure_deadline: Option<Instant>,
+    transcription: Option<tokio::task::AbortHandle>,
     is_enabled: bool,
 }
 
@@ -35,12 +36,22 @@ impl VoiceCapture {
             events,
             state: VoiceState::Idle,
             failure_deadline: None,
+            transcription: None,
             is_enabled: false,
         }
     }
 
     pub fn configure(&mut self, is_enabled: bool) {
         self.is_enabled = is_enabled;
+        if !is_enabled && self.state != VoiceState::Idle {
+            if self.state == VoiceState::Recording {
+                let _ = self.recorder.stop();
+            }
+            if let Some(task) = self.transcription.take() {
+                task.abort();
+            }
+            self.set_state(VoiceState::Idle, None);
+        }
     }
 
     pub fn state(&self) -> VoiceState {
@@ -76,6 +87,10 @@ impl VoiceCapture {
 
     /// Returns the transcript to turn into a task, or records the failure.
     pub fn on_transcribed(&mut self, result: Result<String, PortError>) -> Option<String> {
+        if self.state != VoiceState::Transcribing {
+            return None;
+        }
+        self.transcription = None;
         match result.map(|text| text.trim().to_owned()) {
             Ok(text) if !text.is_empty() => {
                 self.set_state(VoiceState::Idle, None);
@@ -117,12 +132,13 @@ impl VoiceCapture {
         self.set_state(VoiceState::Transcribing, None);
         let transcription = self.speech.transcribe(audio);
         let events = self.events.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let result = transcription.await;
             if events.send(AppEvent::VoiceTranscribed(result)).is_err() {
                 tracing::warn!(event = "log.events.receiverClosed");
             }
         });
+        self.transcription = Some(task.abort_handle());
     }
 
     fn fail(&mut self, key: &'static str) -> Option<String> {

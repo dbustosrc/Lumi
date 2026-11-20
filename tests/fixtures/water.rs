@@ -186,14 +186,17 @@ fn service_schedules_first_due_at_0800_and_then_evenly_spaced_slots() {
     let (mut service, _) = service(Vec::new(), enabled_plan(1500, 500), local_at(7, 59, 0));
     let first_due = local_at(8, 0, 0);
 
+    assert_eq!(service.deadline(), Some(first_due));
     assert_eq!(service.state(local_at(7, 59, 0)).next_at, Some(first_due));
     assert!(!service.tick(local_at(7, 59, 59)));
     assert!(service.tick(first_due));
     assert!(!service.tick(first_due));
     let next_due = local_at(8, 15, 0);
+    assert_eq!(service.deadline(), Some(next_due));
     assert_eq!(service.state(first_due).next_at, Some(next_due));
     assert!(!service.tick(local_at(8, 14, 59)));
     assert!(service.tick(next_due));
+    assert_eq!(service.deadline(), Some(local_at(8, 30, 0)));
 }
 
 #[test]

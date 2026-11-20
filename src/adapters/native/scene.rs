@@ -39,7 +39,7 @@ pub enum Preference {
     Floating,
     Glass,
     GlassTint,
-    WidgetsEnabled,
+    MotionBlur,
     WidgetLeft,
     WidgetRight,
     FirstCity,
@@ -80,6 +80,8 @@ pub enum Action {
     Settings,
     CloseSettings,
     Section(usize),
+    TogglePage(crate::domain::notch::NotchPage),
+    ReorderPage(crate::domain::notch::NotchPage),
     WidgetSlot(bool),
     OpenNotices,
     OpenNotice(usize),
@@ -120,7 +122,7 @@ pub enum Action {
     ShowVolume,
     Lyric(usize),
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Hit {
     pub rect: Rect,
     pub action: Action,

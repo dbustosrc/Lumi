@@ -124,8 +124,10 @@ pub enum AppEvent {
         destination: FileDropDestination,
     },
     FilesPicked(Vec<PathBuf>),
+    ShelfImagesVisible(Vec<Uuid>),
     ShelfThumbnailLoaded {
         id: Uuid,
+        revision: chrono::DateTime<chrono::Utc>,
         thumbnail: Option<ShelfThumbnail>,
     },
     OutboundFileDragState {

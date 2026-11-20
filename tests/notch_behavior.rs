@@ -12,17 +12,59 @@ use background::{
     BackgroundDetection, BackgroundObservation, ContentSample, ContentStability, nearby_detail,
 };
 use hover::{HOVER_LEAVE_GRACE, HOVER_OPEN_DELAY, HoverState};
-use notch::{NotchContext, NotchPage, NotchView, Peek, resolve_view};
+use notch::{NotchContext, NotchPage, NotchView, PageOrder, Peek, resolve_view};
 
 #[test]
-fn widget_page_navigation_respects_the_enable_setting() {
-    assert_eq!(NotchPage::Charging.step(1, true), NotchPage::Widgets);
-    assert_eq!(NotchPage::Widgets.step(1, true), NotchPage::Music);
-    assert_eq!(NotchPage::Widgets.step(-1, true), NotchPage::Charging);
+fn page_navigation_uses_the_configured_order() {
+    let mut pages = PageOrder::default();
+    assert_eq!(pages.step(NotchPage::Charging, 1), Some(NotchPage::Music));
+    assert_eq!(pages.step(NotchPage::Widgets, 1), Some(NotchPage::Music));
+    assert_eq!(pages.step(NotchPage::Widgets, -1), Some(NotchPage::Charging));
 
-    assert_eq!(NotchPage::Charging.step(1, false), NotchPage::Music);
-    assert_eq!(NotchPage::Widgets.step(1, false), NotchPage::Music);
-    assert_eq!(NotchPage::Widgets.step(-1, false), NotchPage::Charging);
+    pages.toggle(NotchPage::Widgets);
+    assert_eq!(pages.step(NotchPage::Charging, 1), Some(NotchPage::Widgets));
+    assert_eq!(pages.step(NotchPage::Widgets, 1), Some(NotchPage::Music));
+    assert_eq!(pages.step(NotchPage::Widgets, -1), Some(NotchPage::Charging));
+}
+
+#[test]
+fn empty_page_order_has_no_navigation_destination() {
+    let mut pages = PageOrder::default();
+    for page in pages.enabled().to_vec() {
+        pages.toggle(page);
+    }
+
+    assert!(pages.enabled().is_empty());
+    assert!(pages.valid());
+    assert_eq!(pages.step(NotchPage::Music, 1), None);
+    assert_eq!(pages.step(NotchPage::Music, -1), None);
+}
+
+#[test]
+fn page_reordering_can_move_across_rows_and_restore_the_original_order() {
+    let original = PageOrder::default();
+    let mut pages = original.clone();
+
+    pages.move_page(NotchPage::Charging, NotchPage::Pomodoro);
+    assert_eq!(
+        pages.enabled(),
+        [
+            NotchPage::Music,
+            NotchPage::Charging,
+            NotchPage::Pomodoro,
+            NotchPage::Water,
+            NotchPage::Shelf,
+            NotchPage::QuickShare,
+            NotchPage::Todo,
+            NotchPage::Headphones,
+        ]
+    );
+    pages.move_page(NotchPage::Charging, NotchPage::Headphones);
+    assert_eq!(pages, original);
+
+    pages.move_page(NotchPage::Widgets, NotchPage::Pomodoro);
+    pages.move_page(NotchPage::Charging, NotchPage::Widgets);
+    assert_eq!(pages, original);
 }
 
 #[test]
