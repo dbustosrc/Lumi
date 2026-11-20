@@ -20,6 +20,7 @@ use crate::application::quick_share::{Command as ShareCommand, Device, Snapshot,
 use crate::application::reminders::{FocusPhase, UtilityState};
 use crate::application::settings::AppSettings;
 use crate::domain::device::{HeadphoneStatus, PowerStatus};
+use crate::domain::media::{CatalogCommand, CatalogResult, CatalogTrack, MediaConnection};
 use crate::domain::notch::{NotchPage, NotchView, PageOrder};
 use crate::domain::shelf::{ShelfContent, ShelfItem, ShelfItemKind};
 use crate::domain::todo::{TaskColor, TaskSchedule, TodoProgress, TodoTask};
@@ -36,6 +37,7 @@ fn shell_keeps_compact_and_expanded_views_centered_with_navigation_height() {
         (NotchView::HeadphonesPeek, 310., 60., 310., 60.),
         (NotchView::Todo, 420., 140., 420., 170.),
         (NotchView::Lyrics, 520., 140., 520., 170.),
+        (NotchView::MusicSearch, 520., 140., 520., 170.),
     ];
 
     for (view, width, height, nav_width, nav_height) in cases {
@@ -965,10 +967,14 @@ fn quick_share_scene_exposes_send_receive_and_request_actions() {
         id: "request-id".into(),
         sender: "test device".into(),
         pin: "123456".into(),
-        files: vec!["test.txt".into()],
+        files: vec![],
+        text_description: Some("https://example.test/shared".into()),
         bytes: 4,
     });
     let request = views::notch_scene(&model, NotchView::QuickShare, now);
+    assert!(request.paint.iter().any(|paint| {
+        matches!(paint, Paint::Text(_, text, ..) if text == "https://example.test/shared")
+    }));
     assert!(request.hits.iter().any(|hit| hit.action == Action::ShareBack));
     for accept in [false, true] {
         assert!(request.hits.iter().any(|hit| {
@@ -981,6 +987,155 @@ fn quick_share_scene_exposes_send_receive_and_request_actions() {
 
     model.apply(ViewUpdate::QuickShare(Snapshot::default()), now);
     assert_eq!(model.quick_share_ui.pane(), Pane::Receive);
+}
+
+#[test]
+fn music_search_requires_connection_and_routes_current_search_and_play_results() {
+    let mut model = UiModel::new(AppSettings::default());
+    let now = Instant::now();
+
+    model.connection = MediaConnection::Connecting;
+    let disconnected = views::notch_scene(&model, NotchView::Music, now);
+    assert!(!disconnected
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::Intent(UserIntent::ToggleMusicSearch)));
+
+    model.connection = MediaConnection::Connected;
+    let connected = views::notch_scene(&model, NotchView::Music, now);
+    assert!(connected
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::Intent(UserIntent::ToggleMusicSearch)));
+    assert!(scene_has_icon(&connected, "search"));
+
+    let lyrics_shell = Shell::for_view(NotchView::Lyrics, false);
+    let search_shell = Shell::for_view(NotchView::MusicSearch, false);
+    assert_eq!(
+        (search_shell.width, search_shell.height),
+        (lyrics_shell.width, lyrics_shell.height)
+    );
+
+    model.music_search.query = "old query".into();
+    let CatalogCommand::Search {
+        id: stale_id,
+        query: stale_query,
+    } = model.music_search.submit(now).unwrap()
+    else {
+        panic!("expected initial catalog search");
+    };
+    assert_eq!(stale_query, "old query");
+
+    model.music_search.query = "  Björk  ".into();
+    let CatalogCommand::Search {
+        id: search_id,
+        query,
+    } = model.music_search.submit(now).unwrap()
+    else {
+        panic!("expected second catalog search");
+    };
+    assert_eq!(query, "Björk");
+    let search = views::notch_scene(&model, NotchView::MusicSearch, now);
+    assert!(search
+        .inputs
+        .iter()
+        .any(|input| input.key == Field::MusicSearch && input.text == "  Björk  "));
+    assert!(search
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::SubmitMusicSearch));
+    assert!(scene_has_icon(&search, "search"));
+    assert!(crate::adapters::native::icons::svg("search", 0xffffff, 16., 16.)
+        .contains("M10 4 A6 6"));
+
+    model.apply(
+        ViewUpdate::MusicCatalog {
+            id: stale_id,
+            result: CatalogResult::Tracks(vec![CatalogTrack {
+                uri: "library://stale".into(),
+                title: "Stale result".into(),
+                artist: "Old artist".into(),
+            }]),
+        },
+        now,
+    );
+    assert!(model.music_search.tracks.is_empty());
+    assert_eq!(model.music_search.status, Some("notch.music.searchLoading"));
+
+    let result = CatalogTrack {
+        uri: "library://joga".into(),
+        title: "Jóga".into(),
+        artist: "Björk".into(),
+    };
+    model.apply(
+        ViewUpdate::MusicCatalog {
+            id: search_id,
+            result: CatalogResult::Tracks(vec![result.clone()]),
+        },
+        now,
+    );
+    assert_eq!(model.music_search.tracks, vec![result]);
+    assert_eq!(model.music_search.status, None);
+
+    let results = views::notch_scene(&model, NotchView::MusicSearch, now);
+    assert!(scene_has_text(&results, "Jóga"));
+    assert!(scene_has_text(&results, "Björk"));
+    assert!(results
+        .hits
+        .iter()
+        .any(|hit| hit.action == Action::PlayMusicSearchResult(0)));
+
+    let CatalogCommand::Play { id: play_id, uri } = model.music_search.play(0, now).unwrap()
+    else {
+        panic!("expected catalog play command");
+    };
+    assert_eq!(uri, "library://joga");
+    assert!(model.music_search.play(0, now).is_none());
+    model.apply(
+        ViewUpdate::MusicCatalog {
+            id: play_id,
+            result: CatalogResult::Playing,
+        },
+        now,
+    );
+    assert_eq!(model.music_search.status, None);
+}
+
+#[test]
+fn shelf_and_quick_share_trays_share_the_todo_background_and_quick_share_outline() {
+    let model = UiModel::new(AppSettings::default());
+    let now = Instant::now();
+    let has_tray_background = |scene: &Scene| {
+        scene
+            .paint
+            .iter()
+            .any(|paint| matches!(paint, Paint::Round(_, _, 0x121214)))
+    };
+
+    let shelf = views::notch_scene(&model, NotchView::Shelf, now);
+    assert!(has_tray_background(&shelf));
+
+    let quick_share = views::notch_scene(&model, NotchView::QuickShare, now);
+    assert!(has_tray_background(&quick_share));
+    let outlines: Vec<_> = quick_share
+        .paint
+        .iter()
+        .filter_map(|paint| match paint {
+            Paint::Icon(rect, glyph, color) if glyph == "drop-zone-border" => {
+                Some((*rect, *color))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outlines.len(), 2, "one outline for each Quick Share tray");
+    assert!(outlines.iter().all(|(_, color)| *color == 0x515154));
+    assert!(outlines[0].0.x < outlines[1].0.x);
+
+    let todo = views::notch_scene(&model, NotchView::Todo, now);
+    assert!(has_tray_background(&todo));
+    assert!(!todo.paint.iter().any(
+        |paint| matches!(paint, Paint::Icon(_, glyph, _) if glyph == "drop-zone-border")
+    ));
 }
 
 #[test]

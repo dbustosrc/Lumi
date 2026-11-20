@@ -1,6 +1,6 @@
 [package]
 name = "lumi"
-version = "1.5.0"
+version = "1.6.0"
 authors = ["David R. Bustos"]
 edition = "2024"
 rust-version = "1.92"
@@ -48,6 +48,7 @@ windows = { version = "0.62", features = [
     "UI_Composition_Desktop",
     "Win32_System_WinRT_Composition",
     "Win32_System_WinRT_Graphics_Direct2D",
+    "Win32_System_WinRT",
     "Foundation_Collections",
     "Devices_Enumeration",
     "Devices_Power",

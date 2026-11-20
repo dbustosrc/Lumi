@@ -88,6 +88,26 @@ pub enum MediaCommand {
     Seek(Duration),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum CatalogCommand {
+    Search { id: uuid::Uuid, query: String },
+    Play { id: uuid::Uuid, uri: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogTrack {
+    pub uri: String,
+    pub title: String,
+    pub artist: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum CatalogResult {
+    Tracks(Vec<CatalogTrack>),
+    Playing,
+    Failed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MediaSource {
     #[default]

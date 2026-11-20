@@ -10,6 +10,7 @@ pub enum NotchView {
     Closed,
     Music,
     Lyrics,
+    MusicSearch,
     /// Temporary drag-in / drag-out file holding area.
     Shelf,
     QuickShare,
@@ -162,6 +163,7 @@ pub struct NotchContext {
     pub page: NotchPage,
     pub no_pages: bool,
     pub is_lyrics_mode: bool,
+    pub is_music_search_open: bool,
     pub has_lyrics: bool,
     pub is_playing: bool,
     pub peek: Option<Peek>,
@@ -202,10 +204,10 @@ pub fn resolve_view(context: &NotchContext) -> NotchView {
         };
     }
     if is_open && !context.no_pages {
-        return if context.page == NotchPage::Music && context.is_lyrics_mode {
-            NotchView::Lyrics
-        } else {
-            context.page.view()
+        return match context.page {
+            NotchPage::Music if context.is_music_search_open => NotchView::MusicSearch,
+            NotchPage::Music if context.is_lyrics_mode => NotchView::Lyrics,
+            page => page.view(),
         };
     }
     if context.is_mascot_enabled && context.is_voice_busy {

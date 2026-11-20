@@ -31,7 +31,7 @@ use super::quick_share::{self, Pane as SharePane};
 use super::scene::*;
 use super::settings::{self, Display, SettingsUi};
 use super::views;
-use crate::application::events::{AppEvent, EventSender, UserIntent};
+use crate::application::events::{AppEvent, EventSender, FileDropDestination, UserIntent};
 use crate::application::presenter::ViewUpdate;
 use crate::application::quick_share::Command as ShareCommand;
 use crate::application::settings::SettingsService;
@@ -73,6 +73,7 @@ enum Event {
     Commit(HWND, bool),
     Cancel(HWND),
     Key(HWND, usize),
+    Paste,
     Close(HWND),
     Tray(usize),
     Update,
@@ -84,7 +85,7 @@ struct Meta {
     settings: isize,
     editing: bool,
     fullscreen: bool,
-    edit_brushes: [isize; 4],
+    edit_brushes: [isize; 3],
 }
 thread_local! {static EVENTS:RefCell<VecDeque<Event>>=const{RefCell::new(VecDeque::new())};static META:Cell<Meta>=Cell::new(Meta::default());}
 fn queue(event: Event) {
@@ -123,6 +124,7 @@ pub struct NativeHost {
     access: Arc<AccessibleWindow>,
     settings_access: Option<Arc<AccessibleWindow>>,
     keyboard_focus: Option<(HWND, u64, Rect)>,
+    paste_previous_foreground: Option<HWND>,
     surface: Surface,
     settings_surface: Option<Surface>,
     model: UiModel,
@@ -162,7 +164,7 @@ pub struct NativeHost {
     frame_timer: bool,
     dirty: bool,
     settings_dirty: bool,
-    edit_brushes: [HBRUSH; 4],
+    edit_brushes: [HBRUSH; 3],
 }
 impl NativeHost {
     pub fn new(
@@ -225,7 +227,7 @@ impl NativeHost {
             }
             let displays = enumerate_displays()?;
             let graphics = GraphicsDevice::new()?;
-            let surface = Surface::new(
+            let surface = Surface::new_software(
                 graphics,
                 notch,
                 SURFACE_WIDTH as u32,
@@ -281,6 +283,7 @@ impl NativeHost {
                 access: AccessibleWindow::new(notch, "Lumi"),
                 settings_access: None,
                 keyboard_focus: None,
+                paste_previous_foreground: None,
                 surface,
                 settings_surface: None,
                 model,
@@ -345,6 +348,11 @@ impl NativeHost {
                 for event in take_events() {
                     self.handle(event)?;
                 }
+                if self.paste_previous_foreground.is_some()
+                    && (!self.pointer_inside || self.paste_destination().is_none())
+                {
+                    self.release_paste_focus();
+                }
                 self.paint()?;
             }
             Ok(())
@@ -361,7 +369,13 @@ impl NativeHost {
                     for update in updates {
                         self.dirty |= match update {
                             ViewUpdate::Progress { .. } => {
-                                matches!(self.model.view, NotchView::Music | NotchView::Lyrics)
+                                matches!(
+                                    self.model.view,
+                                    NotchView::Music | NotchView::Lyrics | NotchView::MusicSearch
+                                )
+                            }
+                            ViewUpdate::MusicCatalog { .. } => {
+                                self.model.view == NotchView::MusicSearch
                             }
                             _ => true,
                         };
@@ -377,7 +391,8 @@ impl NativeHost {
                                 MB_ICONASTERISK,
                             );
                         }
-                        let was_editor = self.model.draft.is_some();
+                        let was_editor =
+                            self.model.draft.is_some() || self.model.view == NotchView::MusicSearch;
                         let was_discovering = self.share_discovering();
                         let reveal_share = matches!(update, ViewUpdate::QuickShareAttention);
                         self.model.apply(update, Instant::now());
@@ -385,8 +400,10 @@ impl NativeHost {
                         if reveal_share {
                             self.intent(UserIntent::RevealQuickShare);
                         }
-                        if was_editor != self.model.draft.is_some() {
-                            self.edit_lock(self.model.draft.is_some())?;
+                        let editing =
+                            self.model.draft.is_some() || self.model.view == NotchView::MusicSearch;
+                        if was_editor != editing {
+                            self.edit_lock(editing)?;
                         }
                     }
                 }
@@ -583,6 +600,13 @@ impl NativeHost {
                         self.settings_scale
                     };
                     let (x, y) = (x / scale, y / scale);
+                    if hwnd == self.notch && self.paste_destination().is_some() {
+                        let body = self.model.motion.sample(Instant::now()).body();
+                        if body.contains(x, y) {
+                            self.set_hover(true);
+                            self.focus_paste_tray();
+                        }
+                    }
                     let scene = if hwnd == self.notch {
                         &self.scene
                     } else {
@@ -684,6 +708,17 @@ impl NativeHost {
                                     .clamp(0., (self.model.shelf.len() as f32 * 68. - 336.).max(0.))
                             }
                             NotchView::QuickShare => quick_share::scroll(&mut self.model, delta),
+                            NotchView::MusicSearch => {
+                                let body = Shell::for_view(self.model.view, self.model.nav).body();
+                                let search = &mut self.model.music_search;
+                                let results =
+                                    views::music_search_results(body, search.status.is_some());
+                                let step = views::MUSIC_RESULT_ROW;
+                                search.scroll = (search.scroll - delta * step).clamp(
+                                    0.,
+                                    (search.tracks.len() as f32 * step - results.h).max(0.),
+                                );
+                            }
                             _ => {}
                         }
                         self.dirty = true;
@@ -738,28 +773,35 @@ impl NativeHost {
                             self.action(Action::SaveSettings, self.settings_window)?;
                         }
                     } else if !blur {
-                        self.action(
-                            if self.model.draft.is_some() {
-                                Action::SaveTask
-                            } else {
-                                Action::SaveShelfText
-                            },
-                            self.notch,
-                        )?;
+                        if self.inputs.field(hwnd) == Some(Field::MusicSearch) {
+                            self.action(Action::SubmitMusicSearch, self.notch)?;
+                        } else if self.model.draft.is_some() {
+                            self.action(Action::SaveTask, self.notch)?;
+                        }
                     }
                 }
                 Event::Cancel(hwnd) => {
                     if self.settings_inputs.field(hwnd).is_some() {
                         self.hide_settings();
-                    } else {
-                        self.action(
-                            if self.model.draft.is_some() {
-                                Action::CancelTask
-                            } else {
-                                Action::CancelShelfText
-                            },
-                            self.notch,
-                        )?;
+                    } else if self.model.view == NotchView::MusicSearch {
+                        self.intent(UserIntent::ToggleMusicSearch);
+                    } else if self.model.draft.is_some() {
+                        self.action(Action::CancelTask, self.notch)?;
+                    }
+                }
+                Event::Paste => {
+                    if GetForegroundWindow() == self.notch
+                        && let Some(destination) = self.paste_destination()
+                    {
+                        match shelf_text::clipboard_event(destination) {
+                            Ok(Some(event)) => {
+                                let _ = self.events.send(event);
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::warn!(%error, "Could not paste clipboard content")
+                            }
+                        }
                     }
                 }
                 Event::Key(hwnd, key) => {
@@ -768,6 +810,8 @@ impl NativeHost {
                             if !self.cancel_page_drag() {
                                 self.hide_settings();
                             }
+                        } else if self.model.view == NotchView::MusicSearch {
+                            self.intent(UserIntent::ToggleMusicSearch);
                         } else {
                             self.action(Action::CancelTask, hwnd)?;
                         }
@@ -869,6 +913,48 @@ impl NativeHost {
             self.intent(UserIntent::Hover(value));
         }
     }
+    fn paste_destination(&self) -> Option<FileDropDestination> {
+        if !self.notch_visible || self.model.fullscreen {
+            return None;
+        }
+        match self.model.view {
+            NotchView::Shelf => Some(FileDropDestination::Shelf),
+            NotchView::QuickShare
+                if matches!(
+                    self.model.quick_share_ui.pane(),
+                    SharePane::Compact | SharePane::Send
+                ) =>
+            {
+                Some(FileDropDestination::QuickShare)
+            }
+            _ => None,
+        }
+    }
+    fn focus_paste_tray(&mut self) {
+        unsafe {
+            let foreground = GetForegroundWindow();
+            if foreground == self.notch {
+                let _ = SetFocus(Some(self.notch));
+            } else if !fullscreen::foreground_is_fullscreen()
+                && SetForegroundWindow(self.notch).as_bool()
+            {
+                self.paste_previous_foreground = Some(foreground);
+                let _ = SetFocus(Some(self.notch));
+            }
+        }
+    }
+    fn release_paste_focus(&mut self) {
+        let Some(previous) = self.paste_previous_foreground.take() else {
+            return;
+        };
+        unsafe {
+            if GetForegroundWindow() == self.notch && !self.model.input_locked {
+                if !IsWindow(Some(previous)).as_bool() || !SetForegroundWindow(previous).as_bool() {
+                    let _ = SetFocus(None);
+                }
+            }
+        }
+    }
     fn tab(&mut self, owner: HWND, back: bool) {
         if self.model.fullscreen {
             return;
@@ -963,7 +1049,7 @@ impl NativeHost {
                             d.time = value;
                         }
                     }
-                    Field::ShelfText => self.model.shelf_text = value,
+                    Field::MusicSearch => self.model.music_search.query = value,
                     _ => {}
                 }
             }
@@ -1026,10 +1112,7 @@ impl NativeHost {
     }
     fn action(&mut self, action: Action, owner: HWND) -> Result<()> {
         if (self.model.fullscreen || fullscreen::foreground_is_fullscreen())
-            && matches!(
-                action,
-                Action::AddTask | Action::EditTask(_) | Action::ShelfText
-            )
+            && matches!(action, Action::AddTask | Action::EditTask(_))
         {
             return Ok(());
         }
@@ -1043,11 +1126,8 @@ impl NativeHost {
                     | Action::Palette
                     | Action::WaterSettings
                     | Action::WaterGraph
-                    | Action::ShelfMenu
                     | Action::SharePane(SharePane::Radar | SharePane::Request)
                     | Action::ShareBack
-                    | Action::ShelfText
-                    | Action::CancelShelfText
             )
         {
             self.local_transition = Some((self.scene.clone(), Instant::now()));
@@ -1249,46 +1329,53 @@ impl NativeHost {
                 Preference::WaterEnabled,
                 i32::from(!self.model.settings.water.enabled),
             )?,
-            Action::ShelfMenu => self.model.shelf_menu = !self.model.shelf_menu,
-            Action::ShelfText => {
-                self.model.shelf_menu = false;
-                self.model.shelf_text_open = true;
-                self.edit_lock(true)?;
-            }
-            Action::SaveShelfText => {
-                self.collect_fields(self.notch);
-                if !self.model.shelf_text.trim().is_empty() {
-                    self.intent(UserIntent::AddShelfText(self.model.shelf_text.clone()));
-                    self.model.shelf_text_open = false;
-                    self.model.shelf_text.clear();
-                    self.edit_lock(false)?;
-                }
-            }
-            Action::CancelShelfText => {
-                self.model.shelf_text_open = false;
-                self.edit_lock(false)?;
-            }
-            Action::PasteShelf => {
-                self.model.shelf_menu = false;
-                match shelf_text::clipboard_text() {
-                    Ok(text) => self.intent(UserIntent::AddShelfText(text)),
-                    Err(e) => {
-                        self.model.hud_detail = e.to_string();
-                    }
-                }
-            }
             Action::DragShelf(id) => self.drag_shelf(id, false)?,
             Action::DragSharedFile(id) => {
-                if let Some(path) = self
+                if let Some(item) = self
                     .model
                     .quick_share
                     .received
                     .iter()
                     .find(|entry| entry.item.id == id)
-                    .and_then(|entry| entry.item.path())
-                    && let Err(error) = shelf_drag::open_shell_path(path)
+                    .map(|entry| &entry.item)
                 {
-                    tracing::warn!(%error, "Quick Share file could not be opened");
+                    let result = match &item.content {
+                        crate::domain::shelf::ShelfContent::Text(text) => {
+                            shelf_text::copy_text(text)
+                        }
+                        crate::domain::shelf::ShelfContent::File(path) => {
+                            shelf_drag::open_shell_path(path)
+                        }
+                    };
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "Quick Share item could not be opened or copied");
+                    }
+                }
+            }
+            Action::ShareShelfText(id) => {
+                if let Some(text) = self
+                    .model
+                    .shelf
+                    .iter()
+                    .find(|entry| entry.item.id == id)
+                    .and_then(|entry| entry.item.text())
+                {
+                    let _ = self.events.send(AppEvent::TextDropped {
+                        text: text.to_owned(),
+                        destination: FileDropDestination::QuickShare,
+                    });
+                }
+            }
+            Action::StoreSharedText(id) => {
+                if let Some(text) = self
+                    .model
+                    .quick_share
+                    .received
+                    .iter()
+                    .find(|entry| entry.item.id == id)
+                    .and_then(|entry| entry.item.text())
+                {
+                    self.intent(UserIntent::AddShelfText(text.to_owned()));
                 }
             }
             Action::ShowVolume => {
@@ -1296,6 +1383,21 @@ impl NativeHost {
             }
             Action::Seek | Action::Volume => {}
             Action::Lyric(index) => self.intent(UserIntent::SeekToLyric(index)),
+            Action::SubmitMusicSearch => {
+                self.collect_fields(self.notch);
+                if self.model.view == NotchView::MusicSearch
+                    && let Some(command) = self.model.music_search.submit(Instant::now())
+                {
+                    self.intent(UserIntent::MusicCatalog(command));
+                }
+            }
+            Action::PlayMusicSearchResult(index) => {
+                if self.model.view == NotchView::MusicSearch
+                    && let Some(command) = self.model.music_search.play(index, Instant::now())
+                {
+                    self.intent(UserIntent::MusicCatalog(command));
+                }
+            }
         }
         self.dirty = true;
         self.settings_dirty = true;
@@ -1471,9 +1573,6 @@ impl NativeHost {
                     for entry in &mut self.model.shelf {
                         entry.thumbnail = None;
                     }
-                    if self.model.shelf_text_open {
-                        self.action(Action::CancelShelfText, self.notch)?;
-                    }
                 }
                 if !pages.contains(NotchPage::Todo) && self.model.draft.is_some() {
                     self.action(Action::CancelTask, self.notch)?;
@@ -1639,6 +1738,7 @@ impl NativeHost {
                 .cloned();
             let Some(monitor) = &self.selected else {
                 let _ = ShowWindow(self.notch, SW_HIDE);
+                self.surface.set_software_visibility(false);
                 return Ok(());
             };
             let placement = place_notch(
@@ -1693,15 +1793,21 @@ impl NativeHost {
                         SW_SHOWNOACTIVATE
                     },
                 );
+                self.surface.set_software_visibility(!suppressed);
                 self.notch_visible = !suppressed;
             }
             if suppressed {
                 self.set_hover(false);
             }
             let was_near = self.model.cursor_near;
+            let tray = matches!(
+                self.model.view,
+                NotchView::FileDrop | NotchView::Shelf | NotchView::QuickShare
+            );
+            let compact_mascot = self.model.compact_mascot(now);
             let mut cursor = POINT::default();
             let cursor = if !suppressed
-                && self.model.compact_mascot(now)
+                && (tray || compact_mascot)
                 && GetCursorPos(&mut cursor).is_ok()
                 && ScreenToClient(self.notch, &mut cursor).as_bool()
             {
@@ -1709,6 +1815,11 @@ impl NativeHost {
             } else {
                 None
             };
+            if tray {
+                let body = self.model.motion.sample(now).body();
+                self.set_hover(cursor.is_some_and(|(x, y)| body.contains(x, y)));
+            }
+            let cursor = cursor.filter(|_| compact_mascot);
             if let Some(monitor) = &self.selected {
                 let radius = MASCOT_PROXIMITY_DIPS * monitor.scale / self.scale;
                 self.dirty |= self.model.observe_mascot_cursor(cursor, radius, now);
@@ -1766,6 +1877,7 @@ impl NativeHost {
             }
             self.model.shelf_removal.expire(now);
             self.model.quick_share_ui.expire_removals(now);
+            self.dirty |= self.model.music_search.expire(now);
             if self.model.settings.desktop.hud_input_language
                 && let Some(id) = desktop_status::input_language()
                 && self.last_language_id != Some(id)
@@ -1814,10 +1926,24 @@ impl NativeHost {
                 || self.form.controls_animating())
     }
     fn draw_frame(&mut self) -> Result<()> {
-        let now = Instant::now();
+        let mut now = Instant::now();
         let suppressed = self.selected.is_none()
             || (self.model.settings.desktop.hide_in_fullscreen && self.model.fullscreen);
         if self.dirty && !suppressed {
+            if !self.surface.is_hardware()
+                && !matches!(
+                    self.model.view,
+                    NotchView::Closed | NotchView::Resting | NotchView::Minimal
+                )
+            {
+                self.surface.promote()?;
+                self.region = None;
+                let ready = Instant::now();
+                let setup = ready - now;
+                self.model.view_changed += setup;
+                self.model.motion.delay(setup);
+                now = ready;
+            }
             let shell = self.model.motion.sample(now);
             let floating = self.model.settings.desktop.appearance.floating;
             let wants_glass = self.model.settings.desktop.appearance.glass && self.model.expanded();
@@ -2384,6 +2510,16 @@ unsafe extern "system" fn window_proc(
             }
             WM_EDIT_TAB => {
                 queue(Event::Key(hwnd, VK_TAB.0 as usize));
+                LRESULT(0)
+            }
+            WM_KEYDOWN
+                if hwnd.0 as isize == meta.notch
+                    && wparam.0 == usize::from(VK_V.0)
+                    && GetKeyState(i32::from(VK_CONTROL.0)) < 0 =>
+            {
+                if lparam.0 & (1 << 30) == 0 {
+                    queue(Event::Paste);
+                }
                 LRESULT(0)
             }
             WM_KEYDOWN => {

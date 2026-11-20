@@ -10,7 +10,7 @@ pub enum Field {
     Preference(Preference),
     TaskTitle,
     TaskTime,
-    ShelfText,
+    MusicSearch,
     RestSeconds,
     MaUrl,
     MaToken,
@@ -107,13 +107,10 @@ pub enum Action {
     WaterSettings,
     WaterGraph,
     ToggleWater,
-    ShelfMenu,
-    ShelfText,
-    SaveShelfText,
-    CancelShelfText,
-    PasteShelf,
     DragShelf(Uuid),
     DragSharedFile(Uuid),
+    ShareShelfText(Uuid),
+    StoreSharedText(Uuid),
     Share(crate::application::quick_share::Command),
     SharePane(super::quick_share::Pane),
     ShareBack,
@@ -121,6 +118,8 @@ pub enum Action {
     Volume,
     ShowVolume,
     Lyric(usize),
+    SubmitMusicSearch,
+    PlayMusicSearchResult(usize),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hit {

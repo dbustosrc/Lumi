@@ -14,11 +14,11 @@ Lumi requires Windows 10 or 11 on x64 with hardware graphics support. If Windows
 
 ## Features
 
-- **Music.** Control Windows media sessions or Music Assistant, view synced lyrics from LRCLIB, and adjust Windows output volume. Music Assistant takes priority while playing.
+- **Music.** Control Windows media sessions or Music Assistant, view synced lyrics from LRCLIB, and adjust Windows output volume. When Music Assistant is connected, use the search button beside Lyrics to find and play songs.
 - **Tasks.** Schedule and repeat tasks. Select a marked date in the month or week view to jump to its first task. Optional voice input requires a Wyoming Whisper server.
 - **Focus and water.** Run focus and break timers, set hydration goals and reminders, and view your drinking history.
-- **Shelf.** Store file references and text cards. Open files, copy text, or drag items out.
-- **Quick Share.** Send files to and receive files from nearby Android devices from the notch.
+- **Shelf.** Drag in or paste file references and text with Ctrl+V. Open files, copy text, or drag items out.
+- **Quick Share.** Send and receive files, text, and links with nearby Android devices from the notch.
 - **Mimo.** The mascot reacts to the cursor, Bluetooth headphones, and Windows notification banners in the compact notch.
 - **Cursor activity.** Enable an activity event every 30 seconds from Settings or the tray. The cursor stays in place, and the feature is off by default.
 - **Desktop settings.** Drag to reorder notch pages or switch off pages you do not use. Choose hover or click to expand, select a monitor on the display map, and configure scale, motion blur, full-screen hiding, and system indicators. The interface is available in English and Spanish.
@@ -29,7 +29,7 @@ Lumi stores preferences, tasks, water history, Shelf items and logs in `%APPDATA
 
 ## Quick Share
 
-Open **Settings → Quick Share** to set the PC name and make it visible to nearby devices. Visibility is off by default. Drag files over the notch, then drop them on **Shelf** to store a reference or on **Quick Share** to stage a transfer. In Quick Share, open **Devices** to choose a recipient. When you receive a request, compare the code on both devices before accepting. Drag received files out of the right tray. Lumi stores them in `%APPDATA%\Lumi\quick-share\received`. Clearing either tray removes its entries and keeps the files on disk.
+Open **Settings → Quick Share** to set the PC name and make it visible to nearby devices. Visibility is off by default. Drag files or selected text over the notch, then drop them on **Shelf** to store them or on **Quick Share** to stage a transfer. You can also click Shelf or Quick Share's sending tray and press **Ctrl+V**. In Quick Share, open **Devices** to choose a recipient. When you receive a request, compare the code on both devices before accepting. Drag received files out of the right tray or click received text to copy it. Lumi stores received files in `%APPDATA%\Lumi\quick-share\received`. Clearing either tray removes its entries and keeps the files on disk.
 
 Quick Share uses the [rquickshare native transport](https://github.com/asulwer/rquickshare/tree/25433197491472e7510c4ffe45ba0394834f49ea/core_lib). The Quick Share name and icon identify Google’s sharing feature.
 

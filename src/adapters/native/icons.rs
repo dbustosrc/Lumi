@@ -117,7 +117,26 @@ pub const ICON_SETTINGS_SLIDERS: (&str, f32, f32, bool, f32) =
 pub const ICON_REMOVE_CROSS: (&str, f32, f32, bool, f32) =
     ("M 2 2 L 8 8 M 8 2 L 2 8", 10.0, 10.0, false, 2.1);
 
-pub fn svg(key: &str, tint: u32) -> String {
+fn drop_zone_border(tint: u32, width: f32, height: f32) -> String {
+    use std::fmt::Write;
+
+    let right = width - 1.;
+    let bottom = height - 1.;
+    let last_x = right - 12.;
+    let last_y = bottom - 12.;
+    let mut path = String::new();
+    for x in (16..=(width as usize).saturating_sub(20)).step_by(8) {
+        let _ = write!(path, "M{x} 1 h4 M{x} {bottom} h4 ");
+    }
+    for y in (16..=(height as usize).saturating_sub(16)).step_by(8) {
+        let _ = write!(path, "M1 {y} v4 M{right} {y} v4 ");
+    }
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}"><path d="{path}M1 13 Q1 1 13 1 M{last_x} 1 Q{right} 1 {right} 13 M{right} {last_y} Q{right} {bottom} {last_x} {bottom} M13 {bottom} Q1 {bottom} 1 {last_y}" fill="none" stroke="#{tint:06x}" stroke-width="1.2"/></svg>"##
+    )
+}
+
+pub fn svg(key: &str, tint: u32, width: f32, height: f32) -> String {
     if key == "focus-glow" || key == "eye-halo" {
         return format!(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><defs><radialGradient id=\"g\"><stop offset=\"0\" stop-color=\"#{tint:06x}\" stop-opacity=\"0.7\"/><stop offset=\"0.7\" stop-color=\"#{tint:06x}\" stop-opacity=\"0.55\"/><stop offset=\"1\" stop-color=\"#{tint:06x}\" stop-opacity=\"0\"/></radialGradient></defs><ellipse cx=\"50\" cy=\"50\" rx=\"50\" ry=\"50\" fill=\"url(#g)\"/></svg>"
@@ -125,9 +144,7 @@ pub fn svg(key: &str, tint: u32) -> String {
     }
 
     if key == "drop-zone-border" {
-        return format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 336 90\"><path d=\"M16 1 h4 M16 89 h4 M24 1 h4 M24 89 h4 M32 1 h4 M32 89 h4 M40 1 h4 M40 89 h4 M48 1 h4 M48 89 h4 M56 1 h4 M56 89 h4 M64 1 h4 M64 89 h4 M72 1 h4 M72 89 h4 M80 1 h4 M80 89 h4 M88 1 h4 M88 89 h4 M96 1 h4 M96 89 h4 M104 1 h4 M104 89 h4 M112 1 h4 M112 89 h4 M120 1 h4 M120 89 h4 M128 1 h4 M128 89 h4 M136 1 h4 M136 89 h4 M144 1 h4 M144 89 h4 M152 1 h4 M152 89 h4 M160 1 h4 M160 89 h4 M168 1 h4 M168 89 h4 M176 1 h4 M176 89 h4 M184 1 h4 M184 89 h4 M192 1 h4 M192 89 h4 M200 1 h4 M200 89 h4 M208 1 h4 M208 89 h4 M216 1 h4 M216 89 h4 M224 1 h4 M224 89 h4 M232 1 h4 M232 89 h4 M240 1 h4 M240 89 h4 M248 1 h4 M248 89 h4 M256 1 h4 M256 89 h4 M264 1 h4 M264 89 h4 M272 1 h4 M272 89 h4 M280 1 h4 M280 89 h4 M288 1 h4 M288 89 h4 M296 1 h4 M296 89 h4 M304 1 h4 M304 89 h4 M312 1 h4 M312 89 h4 M1 16 v4 M335 16 v4 M1 24 v4 M335 24 v4 M1 32 v4 M335 32 v4 M1 40 v4 M335 40 v4 M1 48 v4 M335 48 v4 M1 56 v4 M335 56 v4 M1 64 v4 M335 64 v4 M1 72 v4 M335 72 v4 M1 13 Q1 1 13 1 M323 1 Q335 1 335 13 M335 77 Q335 89 323 89 M13 89 Q1 89 1 77\" fill=\"none\" stroke=\"#{tint:06x}\" stroke-width=\"1.2\"/></svg>"
-        );
+        return drop_zone_border(tint, width, height);
     }
     if key == "folder" {
         return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 36 32\"><path d=\"M3 6H13L16 9H33A2 2 0 0 1 35 11V27A3 3 0 0 1 32 30H4A3 3 0 0 1 1 27V8A2 2 0 0 1 3 6Z\" fill=\"#d89617\"/><path d=\"M2 13H34L32 29A2 2 0 0 1 30 30.5H6A2 2 0 0 1 4 29Z\" fill=\"#ffca43\"/></svg>".into();
@@ -222,6 +239,13 @@ pub fn svg(key: &str, tint: u32) -> String {
         ),
         "sliders" => ICON_SETTINGS_SLIDERS,
         "lyrics" => ICON_LYRICS_BUBBLE,
+        "search" => (
+            "M10 4 A6 6 0 1 1 10 16 A6 6 0 1 1 10 4 Z M14.5 14.5 L20 20",
+            24.,
+            24.,
+            false,
+            1.9,
+        ),
         "\u{e946}" => (SETTINGS_PATHS[10], 24., 24., false, 1.7),
         "\u{e892}" => ICON_PREV,
         "\u{e893}" => ICON_NEXT,

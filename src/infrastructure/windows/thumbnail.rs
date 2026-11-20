@@ -1,14 +1,17 @@
-use std::io::Read;
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
 use image::{ImageFormat, RgbaImage, imageops::FilterType};
-use windows::Win32::Foundation::GENERIC_READ;
+use windows::Storage::Streams::IRandomAccessStream;
+use windows::Win32::Foundation::{E_FAIL, GENERIC_READ};
 use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+    IStream, STREAM_SEEK_CUR, STREAM_SEEK_END, STREAM_SEEK_SET,
 };
-use windows::core::{Interface, PCWSTR};
+use windows::Win32::System::WinRT::CreateStreamOverRandomAccessStream;
+use windows::core::{AgileReference, Interface, PCWSTR};
 
 #[derive(Clone, Copy)]
 enum Size {
@@ -52,17 +55,82 @@ pub fn from_bytes(bytes: &[u8], side: u32) -> Result<RgbaImage, String> {
         ImageFormat::Jpeg | ImageFormat::Png => with_factory(|factory| unsafe {
             let stream = factory.CreateStream()?;
             stream.InitializeFromMemory(bytes)?;
-            let decoder = factory.CreateDecoderFromStream(
-                &stream,
-                std::ptr::null(),
-                WICDecodeMetadataCacheOnDemand,
-            )?;
-            scale_frame(factory, &decoder, Size::Fit(side))
+            scale_stream(factory, &stream, side)
         }),
         ImageFormat::WebP => image::load_from_memory_with_format(bytes, ImageFormat::WebP)
             .map(|image| image.thumbnail(side, side).to_rgba8())
             .map_err(|error| error.to_string()),
         _ => Err("unsupported image format".into()),
+    }
+}
+
+pub fn from_random_access_stream(
+    stream: &AgileReference<IRandomAccessStream>,
+    side: u32,
+) -> Result<RgbaImage, String> {
+    with_factory(|factory| unsafe {
+        let mut stream = ComStream(CreateStreamOverRandomAccessStream(&stream.resolve()?)?);
+        let mut signature = [0; 16];
+        stream.read_exact(&mut signature).map_err(decode_error)?;
+        stream.rewind().map_err(decode_error)?;
+        match image::guess_format(&signature).map_err(decode_error)? {
+            ImageFormat::Jpeg | ImageFormat::Png => scale_stream(factory, &stream.0, side),
+            ImageFormat::WebP => {
+                image::ImageReader::with_format(BufReader::new(stream), ImageFormat::WebP)
+                    .decode()
+                    .map(|image| image.thumbnail(side, side).to_rgba8())
+                    .map_err(decode_error)
+            }
+            _ => Err(decode_error("unsupported image format")),
+        }
+    })
+}
+
+fn decode_error(error: impl std::fmt::Display) -> windows::core::Error {
+    windows::core::Error::new(E_FAIL, error.to_string())
+}
+
+fn scale_stream(
+    factory: &IWICImagingFactory,
+    stream: &IStream,
+    side: u32,
+) -> windows::core::Result<RgbaImage> {
+    let decoder = unsafe {
+        factory.CreateDecoderFromStream(stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)?
+    };
+    scale_frame(factory, &decoder, Size::Fit(side))
+}
+
+struct ComStream(IStream);
+
+impl Read for ComStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let length = buffer.len().min(u32::MAX as usize) as u32;
+        let mut read = 0;
+        unsafe {
+            self.0
+                .Read(buffer.as_mut_ptr().cast(), length, Some(&mut read))
+                .ok()
+        }
+        .map_err(io::Error::other)?;
+        Ok(read as usize)
+    }
+}
+
+impl Seek for ComStream {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let (offset, origin) = match from {
+            SeekFrom::Start(offset) => (
+                i64::try_from(offset)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+                STREAM_SEEK_SET,
+            ),
+            SeekFrom::Current(offset) => (offset, STREAM_SEEK_CUR),
+            SeekFrom::End(offset) => (offset, STREAM_SEEK_END),
+        };
+        let mut position = 0;
+        unsafe { self.0.Seek(offset, origin, Some(&mut position)) }.map_err(io::Error::other)?;
+        Ok(position)
     }
 }
 

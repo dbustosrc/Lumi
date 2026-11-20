@@ -8,9 +8,11 @@ use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{DeviceId, FromSample, Sample, SampleFormat, SizedSample};
 
-const MAX_BUFFERED_SECONDS: usize = 30;
-
 type StereoQueue = Arc<Mutex<VecDeque<(f32, f32)>>>;
+
+#[cfg(test)]
+#[path = "../../../tests/fixtures/audio_output.rs"]
+mod tests;
 
 /// Format negotiated for incoming Sendspin PCM chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +32,7 @@ struct OutputDeviceHandle {
 /// Converts Sendspin PCM frames to the default Windows audio output format.
 pub struct AudioOutputSink {
     queue: StereoQueue,
+    buffer_capacity_bytes: u32,
     volume: Arc<AtomicU8>,
     is_muted: Arc<AtomicBool>,
     stream_format: Option<PcmStreamFormat>,
@@ -38,9 +41,10 @@ pub struct AudioOutputSink {
 }
 
 impl AudioOutputSink {
-    pub fn new() -> Self {
+    pub fn new(buffer_capacity_bytes: u32) -> Self {
         Self {
             queue: Arc::new(Mutex::new(VecDeque::new())),
+            buffer_capacity_bytes,
             volume: Arc::new(AtomicU8::new(100)),
             is_muted: Arc::new(AtomicBool::new(false)),
             stream_format: None,
@@ -94,7 +98,14 @@ impl AudioOutputSink {
         if out.is_invalidated.load(Ordering::Relaxed) {
             return;
         }
-        let decoded = decode_stereo_frames(payload, format.channels, format.bit_depth);
+        let Some((bytes_per_frame, max_input_frames, max_output_frames)) =
+            pcm_frame_limits(format, out.device_sample_rate, self.buffer_capacity_bytes)
+        else {
+            return;
+        };
+        let input_frames = payload.len() / bytes_per_frame;
+        let start = input_frames.saturating_sub(max_input_frames) * bytes_per_frame;
+        let decoded = decode_stereo_frames(&payload[start..], format.channels, format.bit_depth);
         if decoded.is_empty() {
             return;
         }
@@ -103,14 +114,8 @@ impl AudioOutputSink {
         } else {
             resample_stereo(&decoded, format.sample_rate, out.device_sample_rate)
         };
-        let max_frames = (out.device_sample_rate as usize) * MAX_BUFFERED_SECONDS;
         if let Ok(mut guard) = self.queue.lock() {
-            let overflow = (guard.len() + frames.len()).saturating_sub(max_frames);
-            if overflow > 0 {
-                let drain_count = overflow.min(guard.len());
-                guard.drain(..drain_count);
-            }
-            guard.extend(frames);
+            queue_frames(&mut guard, &frames, max_output_frames);
         }
         self.activate_stream_if_needed();
     }
@@ -181,6 +186,42 @@ impl AudioOutputSink {
             self.ensure_warm_output();
         }
     }
+}
+
+fn pcm_frame_limits(
+    format: PcmStreamFormat,
+    device_sample_rate: u32,
+    buffer_capacity_bytes: u32,
+) -> Option<(usize, usize, usize)> {
+    if !matches!(format.bit_depth, 16 | 24)
+        || format.channels == 0
+        || format.sample_rate == 0
+        || device_sample_rate == 0
+    {
+        return None;
+    }
+    let bytes_per_frame = u32::from(format.channels) * u32::from(format.bit_depth / 8);
+    let input_frames = buffer_capacity_bytes / bytes_per_frame;
+    // Preserve the advertised duration when WASAPI uses a different sample rate.
+    let output_frames = (u64::from(input_frames) * u64::from(device_sample_rate))
+        .div_ceil(u64::from(format.sample_rate));
+    Some((
+        bytes_per_frame as usize,
+        input_frames as usize,
+        usize::try_from(output_frames).ok()?,
+    ))
+}
+
+fn queue_frames(queue: &mut VecDeque<(f32, f32)>, frames: &[(f32, f32)], max_frames: usize) {
+    let frames = &frames[frames.len().saturating_sub(max_frames)..];
+    let discard = queue.len().saturating_sub(max_frames - frames.len());
+    queue.drain(..discard);
+    if queue.capacity() > max_frames {
+        queue.shrink_to(max_frames);
+    } else if queue.len() + frames.len() > queue.capacity() {
+        queue.reserve_exact(max_frames - queue.len());
+    }
+    queue.extend(frames.iter().copied());
 }
 
 /// Queries the default Windows output device's preferred sample rate and stereo channel count.

@@ -8,13 +8,13 @@ use super::model::{
 };
 use super::scene::{Action, Paint, Scene, TextSpan};
 use super::views::{
-    SHELF_CARD_STEP, ShelfLayout, ShelfUse, icon_button, shelf_cards, shelf_extent,
+    SHELF_CARD_STEP, ShelfLayout, ShelfUse, TRAY_BACKGROUND, drop_zone_outline, icon_button,
+    shelf_cards, shelf_extent,
 };
 use crate::application::quick_share::{Command, Request, Snapshot, Tray};
 use crate::domain::shelf::format_byte_size;
 use crate::i18n::translate as tr;
 
-const SURFACE: u32 = 0x19191c;
 const WHITE: u32 = 0xffffff;
 const DIM: u32 = 0xa4a4aa;
 const BUTTON: u32 = 0x303034;
@@ -253,7 +253,7 @@ fn top_left(rect: Rect) -> Rect {
 }
 
 fn detail(scene: &mut Scene, rect: Rect) {
-    scene.round(rect, 13., SURFACE);
+    scene.round(rect, 13., TRAY_BACKGROUND);
     let button = top_left(rect);
     scene.round(button, 8., BUTTON);
     scene.icon(button.inset(3.5), "\u{e76b}", WHITE);
@@ -298,10 +298,8 @@ fn tray(
     let removal = model.quick_share_ui.removal(kind, now);
     let clear_width = if compact { 16. } else { 62. };
     let mut controls_right = rect.x + rect.w - 6.;
-    scene.round(rect, 13., SURFACE);
-    if model.shelf_drag && outgoing {
-        scene.alpha_border(rect, 13., 0x73b5ff, 1., 0.9);
-    }
+    scene.round(rect, 13., TRAY_BACKGROUND);
+    drop_zone_outline(scene, rect, model.shelf_drag && outgoing);
     let receive_error = state.received_status.filter(|key| {
         matches!(
             *key,
@@ -313,12 +311,7 @@ fn tray(
     });
     if files.is_empty() && removal.is_none() {
         let (title, hint) = if outgoing {
-            scene.hit(
-                rect,
-                Action::Share(Command::Browse),
-                tr("quickShare.browse"),
-            );
-            ("notch.shelf.dropTitle", "quickShare.browse")
+            ("notch.shelf.dropTitle", "notch.shelf.pasteHint")
         } else {
             ("quickShare.empty", "quickShare.receiveHint")
         };
@@ -340,8 +333,9 @@ fn tray(
         } else {
             state.received_status
         };
+        let hint_rect = Rect::new(rect.x + 5., rect.y + 66., rect.w - 10., 16.);
         scene.text(
-            Rect::new(rect.x + 5., rect.y + 68., rect.w - 10., 13.),
+            hint_rect,
             tr(status.unwrap_or(hint)),
             9.3,
             if outgoing || receive_error.is_none() {
@@ -352,6 +346,13 @@ fn tray(
             false,
             true,
         );
+        if outgoing && status.is_none() {
+            scene.hit(
+                hint_rect,
+                Action::Share(Command::Browse),
+                tr("notch.shelf.browse"),
+            );
+        }
     } else {
         let viewport = file_viewport(rect);
         let total = shelf_extent(files.len());
@@ -604,6 +605,13 @@ fn radar(scene: &mut Scene, model: &UiModel, rect: Rect, now: Instant) {
         tr("quickShare.searching")
     } else if state.outgoing.is_empty() {
         tr("quickShare.addBeforeSend")
+    } else if state.outgoing.len() > 1
+        && state
+            .outgoing
+            .iter()
+            .any(|entry| entry.item.text().is_some())
+    {
+        tr("quickShare.separateTransfers")
     } else {
         String::new()
     };
@@ -619,10 +627,19 @@ fn radar(scene: &mut Scene, model: &UiModel, rect: Rect, now: Instant) {
 
 fn request_card(scene: &mut Scene, rect: Rect, request: &Request) {
     let title = format!("{} {}", tr("quickShare.from"), request.sender);
-    let file = if request.files.len() == 1 {
-        request.files[0].clone()
-    } else {
-        format!("{} {}", request.files.len(), tr("quickShare.files"))
+    let detail = match request.files.as_slice() {
+        [] => request
+            .text_description
+            .as_deref()
+            .filter(|title| !title.trim().is_empty())
+            .map_or_else(|| tr("quickShare.text"), str::to_owned),
+        [file] => format!("{file} · {}", format_byte_size(request.bytes)),
+        files => format!(
+            "{} {} · {}",
+            files.len(),
+            tr("quickShare.files"),
+            format_byte_size(request.bytes)
+        ),
     };
     scene.text(
         Rect::new(rect.x + 13., rect.y + 30., 126., 17.),
@@ -634,7 +651,7 @@ fn request_card(scene: &mut Scene, rect: Rect, request: &Request) {
     );
     scene.text(
         Rect::new(rect.x + 13., rect.y + 50., 126., 15.),
-        format!("{file} · {}", format_byte_size(request.bytes)),
+        detail,
         9.5,
         DIM,
         false,

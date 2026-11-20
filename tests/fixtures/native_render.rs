@@ -34,8 +34,8 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUn
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Time::{DYNAMIC_TIME_ZONE_INFORMATION, EnumDynamicTimeZoneInformation};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, IsWindowVisible, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-    WS_EX_TOOLWINDOW, WS_POPUP,
+    CreateWindowExW, DestroyWindow, IsWindowVisible, WS_EX_NOACTIVATE,
+    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::w;
 
@@ -208,6 +208,127 @@ fn native_motion_blur_spreads_pixels_beyond_the_sharp_shape()
     assert!(edge_energy(&blurred) > 0);
     assert!(sharp.get_pixel(32, 32).0[0] > 0);
     assert!(blurred.get_pixel(32, 32).0[0] > 0);
+    Ok(())
+}
+
+#[test]
+fn software_surface_promotes_on_the_same_composition_window()
+-> std::result::Result<(), Box<dyn Error>> {
+    const WIDTH: u32 = SURFACE_WIDTH as u32;
+    const HEIGHT: u32 = SURFACE_HEIGHT as u32;
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
+    let _com = ComApartment;
+    let module = unsafe { GetModuleHandleW(None)? };
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW,
+            w!("STATIC"),
+            w!("Lumi composition surface fixture"),
+            WS_POPUP,
+            0,
+            0,
+            WIDTH as i32,
+            HEIGHT as i32,
+            None,
+            None,
+            Some(module.into()),
+            None,
+        )?
+    };
+    let _window = HiddenWindow(hwnd);
+    let device = GraphicsDevice::new()?;
+    assert!(device.hardware.get().is_none());
+    let mut surface = Surface::new_software(device.clone(), hwnd, WIDTH, HEIGHT, 1.0)?;
+    assert!(!surface.is_hardware());
+    assert!(device.hardware.get().is_none());
+
+    let shell = Shell::for_view(NotchView::Music, false);
+    let commands = [
+        Paint::AlphaRound(Rect::new(180., 40., 80., 60.), 0., 0xff0000, 0.5),
+        Paint::VectorPath {
+            start: (260., 40.),
+            segments: vec![
+                PathSegment::Line(300., 40.),
+                PathSegment::Line(280., 90.),
+                PathSegment::Line(260., 40.),
+            ],
+            closed: true,
+            fill: Some((0x00ff00, 1.)),
+            stroke: None,
+        },
+        Paint::Icon(Rect::new(330., 35., 40., 40.), "water-drop".into(), 0x3366ff),
+    ];
+    let draw = |surface: &mut Surface| -> std::result::Result<(), Box<dyn Error>> {
+        surface.begin(None);
+        surface.styled_shell(shell, false, 0.)?;
+        surface.clip_shell()?;
+        surface.paint(&commands, 1., (0., 0.))?;
+        surface.unclip_shell();
+        Ok(())
+    };
+
+    draw(&mut surface)?;
+    surface.end()?;
+    let software_pixels = surface
+        .software
+        .as_ref()
+        .expect("software presentation remains before promotion")
+        .pixels()
+        .to_vec();
+    assert_eq!(software_pixels.len(), WIDTH as usize * HEIGHT as usize * 4);
+
+    let pixel = |bytes: &[u8], x: u32, y: u32| {
+        let offset = ((y * WIDTH + x) * 4) as usize;
+        let (blue, green, red, alpha) = (
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            u16::from(bytes[offset + 3]),
+        );
+        let straight = |channel: u8| {
+            if alpha == 0 {
+                0
+            } else {
+                ((u16::from(channel) * 255 + alpha / 2) / alpha).min(255) as u8
+            }
+        };
+        [straight(red), straight(green), straight(blue), alpha as u8]
+    };
+    let software_alpha = pixel(&software_pixels, 220, 70);
+    assert!(software_alpha[0] > 240 && (120..=136).contains(&software_alpha[3]));
+    let software_vector = pixel(&software_pixels, 280, 50);
+    assert!(software_vector[1] > 240 && software_vector[3] > 240);
+    assert_eq!(pixel(&software_pixels, 20, 100), [0, 0, 0, 0]);
+    assert!(software_pixels.chunks_exact(4).enumerate().any(|(index, pixel)| {
+        let x = index % WIDTH as usize;
+        let y = index / WIDTH as usize;
+        (330..370).contains(&x) && (35..75).contains(&y) && pixel[0] > 0 && pixel[3] > 0
+    }));
+
+    assert!(device.hardware.get().is_none());
+    surface.promote()?;
+    assert!(surface.is_hardware());
+    assert!(device.hardware.get().is_some());
+    assert!(surface.outgoing_window.is_some());
+    draw(&mut surface)?;
+    let gpu_pixels = readback(&surface)?;
+    surface.end()?;
+    assert!(surface.outgoing_window.is_none());
+    assert!(gpu_pixels.pixels().enumerate().any(|(index, pixel)| {
+        let x = index % WIDTH as usize;
+        let y = index / WIDTH as usize;
+        (330..370).contains(&x) && (35..75).contains(&y) && pixel.0[2] > 0 && pixel.0[3] > 0
+    }));
+    for (x, y) in [(220, 70), (280, 50), (20, 100)] {
+        let software = pixel(&software_pixels, x, y);
+        let gpu = gpu_pixels.get_pixel(x, y).0;
+        for channel in 0..4 {
+            assert!(
+                software[channel].abs_diff(gpu[channel]) <= 8,
+                "pixel mismatch at ({x}, {y}) channel {channel}: software={software:?}, gpu={gpu:?}"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1251,6 +1372,7 @@ fn render_mouse_move_settings(
 }
 
 fn readback(surface: &Surface) -> std::result::Result<RgbaImage, Box<dyn Error>> {
+    let hardware = surface.device.hardware()?;
     let width = surface.width;
     let height = surface.height;
     let description = D3D11_TEXTURE2D_DESC {
@@ -1269,15 +1391,20 @@ fn readback(surface: &Surface) -> std::result::Result<RgbaImage, Box<dyn Error>>
     };
     let mut staging = None;
     unsafe {
-        surface
-            .device
+        hardware
             .d3d
             .CreateTexture2D(&description, None, Some(&mut staging))?
     };
     let staging = staging.expect("D3D11 creates the requested staging texture");
-    let source: ID3D11Texture2D = unsafe { surface.swap.GetBuffer(0)? };
+    let source: ID3D11Texture2D = unsafe {
+        surface
+            .swap
+            .as_ref()
+            .expect("hardware surface has a swap chain")
+            .GetBuffer(0)?
+    };
     unsafe { surface.context.Flush(None, None)? };
-    let context = unsafe { surface.device.d3d.GetImmediateContext()? };
+    let context = unsafe { hardware.d3d.GetImmediateContext()? };
     unsafe {
         context.CopyResource(&staging, &source);
         context.Flush();

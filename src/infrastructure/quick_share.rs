@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use rqs_lib::channel::{ChannelAction, ChannelDirection, ChannelMessage, TransferType};
-use rqs_lib::{EndpointInfo, OutboundPayload, RQS, SendInfo, State, Visibility};
+use rqs_lib::{EndpointInfo, OutboundPayload, RQS, SendInfo, State, TextPayloadType, Visibility};
 use tokio::sync::{broadcast, mpsc, watch};
 use uuid::Uuid;
 
@@ -83,6 +83,7 @@ struct Service {
     requests: VecDeque<Request>,
     accepted: HashSet<String>,
     active: Option<(String, Vec<Uuid>)>,
+    pending: VecDeque<(SendInfo, Vec<Uuid>)>,
     discovering: bool,
     refresh_after_send: bool,
     picker: Option<tokio::task::JoinHandle<Result<Vec<PathBuf>, PortError>>>,
@@ -104,9 +105,10 @@ pub async fn run(
             state.received = items
                 .into_iter()
                 .filter(|item| {
-                    item.path().is_some_and(|path| {
-                        path.parent() == Some(directory.as_path()) && path.is_file()
-                    })
+                    item.text().is_some()
+                        || item.path().is_some_and(|path| {
+                            path.parent() == Some(directory.as_path()) && path.is_file()
+                        })
                 })
                 .map(|item| ShelfEntry::new(item, None))
                 .collect();
@@ -129,6 +131,7 @@ pub async fn run(
         requests: VecDeque::new(),
         accepted: HashSet::new(),
         active: None,
+        pending: VecDeque::new(),
         discovering: false,
         refresh_after_send: false,
         picker: None,
@@ -316,6 +319,7 @@ impl Service {
         self.requests.clear();
         self.accepted.clear();
         self.active = None;
+        self.pending.clear();
         self.devices.clear();
         self.discovering = false;
         self.refresh_after_send = false;
@@ -334,6 +338,7 @@ impl Service {
                 }
             }
             Command::Stage(paths) => self.stage(paths),
+            Command::StageText(text) => self.stage_text(text),
             Command::Remove(tray, id) => self.remove_files(tray, Some(id)),
             Command::Clear(tray) => self.remove_files(tray, None),
             Command::Discover(true) => {
@@ -377,6 +382,10 @@ impl Service {
                             .active
                             .as_ref()
                             .is_some_and(|(_, ids)| ids.contains(&entry.item.id))
+                        || self
+                            .pending
+                            .iter()
+                            .any(|(_, ids)| ids.contains(&entry.item.id))
                 });
             }
             Tray::Received => {
@@ -438,6 +447,15 @@ impl Service {
         }
     }
 
+    fn stage_text(&mut self, text: String) {
+        if let Some(item) = ShelfItem::new_text(text, chrono::Utc::now()) {
+            self.state.outgoing.push(ShelfEntry::new(item, None));
+            if !self.state.sending {
+                self.state.status = None;
+            }
+        }
+    }
+
     fn endpoint(&mut self, endpoint: EndpointInfo) {
         if !self.discovering {
             return;
@@ -465,36 +483,44 @@ impl Service {
         if self.active.is_some() || self.state.outgoing.is_empty() {
             return;
         }
-        let (Some(engine), Some((name, address))) = (&self.engine, self.devices.get(&device))
-        else {
+        let (Some(_), Some((name, address))) = (&self.engine, self.devices.get(&device)) else {
             self.state.status = Some("quickShare.unavailable");
             return;
         };
-        let ids = self
-            .state
-            .outgoing
-            .iter()
-            .map(|entry| entry.item.id)
+        self.pending = transfer_payloads(&self.state.outgoing)
+            .into_iter()
+            .map(|(payload, ids)| {
+                (
+                    SendInfo {
+                        id: Uuid::new_v4().to_string(),
+                        name: name.clone(),
+                        addr: address.clone(),
+                        ob: payload,
+                    },
+                    ids,
+                )
+            })
             .collect();
-        let files = self
-            .state
-            .outgoing
-            .iter()
-            .filter_map(|entry| entry.item.path()?.to_str())
-            .map(str::to_owned)
-            .collect();
-        let id = Uuid::new_v4().to_string();
-        let transfer = SendInfo {
-            id: id.clone(),
-            name: name.clone(),
-            addr: address.clone(),
-            ob: OutboundPayload::Files(files),
+        self.send_next();
+    }
+
+    fn send_next(&mut self) {
+        self.state.pin = None;
+        self.state.sending = false;
+        let Some((transfer, ids)) = self.pending.pop_front() else {
+            return;
         };
-        if engine.send.try_send(transfer).is_ok() {
+        let id = transfer.id.clone();
+        if self
+            .engine
+            .as_ref()
+            .is_some_and(|engine| engine.send.try_send(transfer).is_ok())
+        {
             self.active = Some((id, ids));
             self.state.sending = true;
             self.state.status = Some("quickShare.sending");
         } else {
+            self.pending.clear();
             self.state.status = Some("quickShare.unavailable");
         }
     }
@@ -524,7 +550,8 @@ impl Service {
                             id: message.id.clone(),
                             sender: meta.source?.name,
                             pin: meta.pin_code?,
-                            files: meta.files.filter(|files| !files.is_empty())?,
+                            files: meta.files.unwrap_or_default(),
+                            text_description: meta.text_description,
                             bytes: meta.total_bytes,
                         })
                     });
@@ -549,9 +576,19 @@ impl Service {
                     self.requests.retain(|request| request.id != message.id);
                     if self.accepted.remove(&message.id) {
                         if *state == State::Finished
-                            && let Some(files) = message.meta.and_then(|meta| meta.files)
+                            && let Some(meta) = message.meta
                         {
-                            self.receive(files);
+                            let items = self.received_items(meta.files.unwrap_or_default());
+                            let text = if matches!(
+                                meta.text_type,
+                                Some(TextPayloadType::Text | TextPayloadType::Url)
+                            ) {
+                                meta.text_payload
+                                    .and_then(|text| ShelfItem::new_text(text, chrono::Utc::now()))
+                            } else {
+                                None
+                            };
+                            self.receive(items.into_iter().chain(text).collect());
                         } else {
                             self.receive_failed("quickShare.transferError");
                         }
@@ -583,11 +620,13 @@ impl Service {
                             .retain(|entry| !ids.contains(&entry.item.id));
                         self.state.status = Some("quickShare.sent");
                         self.refresh_after_send = true;
+                        self.send_next();
                     } else {
+                        self.pending.clear();
                         self.state.status = Some("quickShare.transferError");
+                        self.state.sending = false;
+                        self.state.pin = None;
                     }
-                    self.state.sending = false;
-                    self.state.pin = None;
                 } else if let Some(pin) = message.meta.and_then(|meta| meta.pin_code) {
                     self.state.pin = Some(pin);
                 }
@@ -596,7 +635,8 @@ impl Service {
         }
     }
 
-    fn receive(&mut self, names: Vec<String>) {
+    fn received_items(&self, names: Vec<String>) -> Vec<ShelfItem> {
+        let mut items = Vec::new();
         for name in names {
             let path = Path::new(&name);
             if !matches!(
@@ -609,20 +649,34 @@ impl Service {
             if let Ok(Some(metadata)) = NativeShelfPlatform.inspect_path(&path)
                 && !metadata.is_directory
             {
-                self.state.received.insert(
-                    0,
-                    ShelfEntry::new(ShelfItem::new(path, metadata, chrono::Utc::now()), None),
-                );
+                items.push(ShelfItem::new(path, metadata, chrono::Utc::now()));
             }
         }
-        let items: Vec<_> = self
-            .state
-            .received
+        items
+    }
+
+    fn receive(&mut self, items: Vec<ShelfItem>) {
+        if items.is_empty() {
+            self.receive_failed("quickShare.transferError");
+            return;
+        }
+        let all: Vec<_> = items
             .iter()
-            .map(|entry| entry.item.clone())
+            .rev()
+            .cloned()
+            .chain(self.state.received.iter().map(|entry| entry.item.clone()))
             .collect();
-        if self.save_received(&items) {
+        if self.save_received(&all) {
+            self.state.received.splice(
+                0..0,
+                items
+                    .into_iter()
+                    .rev()
+                    .map(|item| ShelfEntry::new(item, None)),
+            );
             self.state.received_status = Some("quickShare.received");
+        } else {
+            self.notify_receive();
         }
     }
 
@@ -637,6 +691,24 @@ impl Service {
         self.state.received_status = Some("quickShare.storageError");
         false
     }
+}
+
+fn transfer_payloads(entries: &[ShelfEntry]) -> Vec<(OutboundPayload, Vec<Uuid>)> {
+    let mut files = Vec::new();
+    let mut file_ids = Vec::new();
+    let mut payloads = Vec::new();
+    for entry in entries {
+        if let Some(path) = entry.item.path().and_then(Path::to_str) {
+            files.push(path.to_owned());
+            file_ids.push(entry.item.id);
+        } else if let Some(text) = entry.item.text() {
+            payloads.push((OutboundPayload::Text(text.to_owned()), vec![entry.item.id]));
+        }
+    }
+    if !files.is_empty() {
+        payloads.insert(0, (OutboundPayload::Files(files), file_ids));
+    }
+    payloads
 }
 
 fn endpoint_address(ip: &str, port: &str) -> Option<String> {

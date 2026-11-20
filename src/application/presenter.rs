@@ -3,7 +3,7 @@ use std::time::Duration;
 use chrono::{DateTime, Local};
 
 use crate::domain::device::{HeadphoneStatus, PowerStatus};
-use crate::domain::media::{Artwork, MediaConnection, Track};
+use crate::domain::media::{Artwork, CatalogResult, MediaConnection, Track};
 use crate::domain::notch::NotchView;
 use crate::domain::shelf::{ShelfItem, ShelfThumbnail};
 use crate::domain::todo::{TodoProgress, TodoTask};
@@ -91,6 +91,10 @@ pub enum ViewUpdate {
     Lyrics(LyricsAvailability),
     ActiveLyric(Option<usize>),
     LyricsMode(bool),
+    MusicCatalog {
+        id: uuid::Uuid,
+        result: CatalogResult,
+    },
     ShelfItems(Vec<ShelfEntry>),
     QuickShare(super::quick_share::Snapshot),
     QuickShareAttention,

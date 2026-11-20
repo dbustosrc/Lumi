@@ -30,6 +30,10 @@ impl QueueTracker {
         self.followed.as_deref()
     }
 
+    pub fn playback_queue_id(&self) -> &str {
+        self.preferred.as_deref().unwrap_or(&self.local_player_id)
+    }
+
     pub fn upsert(&mut self, queue: QueueState) -> Option<PlaybackSnapshot> {
         self.queues.insert(queue.queue_id.clone(), queue);
         self.refresh()

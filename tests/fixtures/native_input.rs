@@ -35,7 +35,7 @@ const FIXTURE_WIDTH: i32 = 900;
 const FIXTURE_HEIGHT: i32 = 408;
 
 thread_local! {
-    static FIXTURE_BRUSHES: Cell<[isize; 4]> = const { Cell::new([0; 4]) };
+    static FIXTURE_BRUSHES: Cell<[isize; 3]> = const { Cell::new([0; 3]) };
 }
 
 struct ComApartment;
@@ -60,7 +60,7 @@ impl Drop for LocaleGuard {
 
 struct FixtureWindow {
     hwnd: HWND,
-    brushes: [HBRUSH; 4],
+    brushes: [HBRUSH; 3],
     instance: windows::Win32::Foundation::HINSTANCE,
     class_name: Vec<u16>,
 }
@@ -154,7 +154,7 @@ impl Drop for FixtureWindow {
     fn drop(&mut self) {
         unsafe {
             let _ = DestroyWindow(self.hwnd);
-            FIXTURE_BRUSHES.with(|stored| stored.set([0; 4]));
+            FIXTURE_BRUSHES.with(|stored| stored.set([0; 3]));
             for brush in self.brushes {
                 let _ = DeleteObject(brush.into());
             }
@@ -359,8 +359,7 @@ fn card(scene: &mut Scene, x: f32, y: f32, title: &str, inputs: &[(Field, &str, 
         let style = match field {
             Field::TaskTitle => 0,
             Field::TaskTime => 1,
-            Field::ShelfText => 2,
-            _ => 3,
+            _ => 2,
         };
         scene.round(background, 7., EDIT_BACKGROUNDS[style]);
         scene.input(

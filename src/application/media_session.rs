@@ -5,13 +5,15 @@ use super::events::{AppEvent, EventSender};
 use super::presenter::{LyricsAvailability, NotchPresenter, ViewUpdate};
 use crate::domain::lyrics::SyncedLyrics;
 use crate::domain::media::{
-    Artwork, MediaCommand, MediaSource, PlaybackSnapshot, Track, preferred_source,
+    Artwork, CatalogCommand, MediaCommand, MediaSource, PlaybackSnapshot, Track, preferred_source,
 };
-use crate::domain::ports::{ArtworkLoader, LyricsProvider, MediaController, VolumeController};
+use crate::domain::ports::{
+    ArtworkLoader, LyricsProvider, MediaController, MusicCatalog, VolumeController,
+};
 
 /// Ports the media session depends on.
 pub struct MediaPorts {
-    pub controller: Arc<dyn MediaController>,
+    pub controller: Arc<dyn MusicCatalog>,
     pub windows: Arc<dyn MediaController>,
     pub volume: Arc<dyn VolumeController>,
     pub artwork: Arc<dyn ArtworkLoader>,
@@ -85,6 +87,10 @@ impl MediaSession {
             MediaSource::MusicAssistant => self.ports.controller.execute(command),
             MediaSource::Windows => self.ports.windows.execute(command),
         }
+    }
+
+    pub fn catalog(&self, command: CatalogCommand) {
+        self.ports.controller.catalog(command);
     }
 
     pub fn set_volume(&self, level: f32) {

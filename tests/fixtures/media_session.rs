@@ -5,17 +5,29 @@ use std::sync::Mutex;
 use crate::application::events::create_event_channel;
 use crate::application::presenter::{LyricsAvailability, NotchPresenter, ViewUpdate};
 use crate::domain::lyrics::SyncedLyrics;
-use crate::domain::media::{Artwork, MediaCommand, PlaybackSnapshot, PlaybackStatus, Track};
+use crate::domain::media::{
+    Artwork, CatalogCommand, MediaCommand, PlaybackSnapshot, PlaybackStatus, Track,
+};
 use crate::domain::ports::{
-    ArtworkLoader, LyricsProvider, MediaController, PortError, PortFuture, VolumeController,
+    ArtworkLoader, LyricsProvider, MediaController, MusicCatalog, PortError, PortFuture,
+    VolumeController,
 };
 
 #[derive(Default)]
-struct RecordingController(Mutex<Vec<MediaCommand>>);
+struct RecordingController {
+    transport: Mutex<Vec<MediaCommand>>,
+    catalog: Mutex<Vec<CatalogCommand>>,
+}
 
 impl MediaController for RecordingController {
     fn execute(&self, command: MediaCommand) {
-        self.0.lock().unwrap().push(command);
+        self.transport.lock().unwrap().push(command);
+    }
+}
+
+impl MusicCatalog for RecordingController {
+    fn catalog(&self, command: CatalogCommand) {
+        self.catalog.lock().unwrap().push(command);
     }
 }
 
@@ -123,8 +135,42 @@ async fn transport_switches_to_windows_when_assistant_pauses() {
         .on_playback(snapshot("assistant", PlaybackStatus::Paused));
     fixture.session.execute(MediaCommand::Previous);
 
-    assert_eq!(*fixture.assistant.0.lock().unwrap(), [MediaCommand::Next]);
-    assert_eq!(*fixture.windows.0.lock().unwrap(), [MediaCommand::Previous]);
+    assert_eq!(
+        *fixture.assistant.transport.lock().unwrap(),
+        [MediaCommand::Next]
+    );
+    assert_eq!(
+        *fixture.windows.transport.lock().unwrap(),
+        [MediaCommand::Previous]
+    );
+}
+
+#[tokio::test]
+async fn catalog_commands_stay_on_music_assistant_when_windows_is_followed() {
+    let mut fixture = fixture();
+    fixture
+        .session
+        .on_playback(snapshot("assistant", PlaybackStatus::Playing));
+    fixture
+        .session
+        .on_windows_playback(snapshot("windows", PlaybackStatus::Playing));
+    let search = CatalogCommand::Search {
+        id: uuid::Uuid::new_v4(),
+        query: "Blue Monday".into(),
+    };
+    fixture.session.catalog(search.clone());
+
+    fixture
+        .session
+        .on_playback(snapshot("assistant", PlaybackStatus::Paused));
+    let play = CatalogCommand::Play {
+        id: uuid::Uuid::new_v4(),
+        uri: "library://track/123".into(),
+    };
+    fixture.session.catalog(play.clone());
+
+    assert_eq!(*fixture.assistant.catalog.lock().unwrap(), [search, play]);
+    assert!(fixture.windows.catalog.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

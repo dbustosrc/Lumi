@@ -107,7 +107,7 @@ async fn run_player_session(
     })
     .await
     .map_err(|_| "Sendspin handshake timed out".to_owned())??;
-    let mut sink = AudioOutputSink::new();
+    let mut sink = AudioOutputSink::new(BUFFER_CAPACITY_BYTES);
     send_player_state(&mut socket, &sink).await?;
     let epoch = Instant::now();
     send_clock_burst(&mut socket, epoch).await?;

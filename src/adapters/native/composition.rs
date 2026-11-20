@@ -89,11 +89,11 @@ pub struct WindowComposition {
 }
 
 impl WindowComposition {
-    pub fn check_glass(&self) -> Result<()> {
+    pub fn check_glass(hwnd: HWND) -> Result<()> {
         let enabled = BOOL(1);
         unsafe {
             DwmSetWindowAttribute(
-                self.hwnd,
+                hwnd,
                 DWMWA_USE_HOSTBACKDROPBRUSH,
                 (&enabled as *const BOOL).cast(),
                 size_of::<BOOL>() as u32,

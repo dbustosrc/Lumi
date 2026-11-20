@@ -14,6 +14,7 @@ pub struct HoverState {
     is_open: bool,
     enter_until: Option<Instant>,
     leave_until: Option<Instant>,
+    hold_until: Option<Instant>,
     reopen_until: Option<Instant>,
 }
 
@@ -40,7 +41,8 @@ impl HoverState {
         } else {
             self.enter_until = None;
             if self.is_open && self.leave_until.is_none() {
-                self.leave_until = Some(now + HOVER_LEAVE_GRACE);
+                let grace = now + HOVER_LEAVE_GRACE;
+                self.leave_until = Some(self.hold_until.map_or(grace, |until| until.max(grace)));
             }
         }
     }
@@ -48,10 +50,20 @@ impl HoverState {
     pub fn reveal_for(&mut self, now: Instant, duration: Duration) {
         self.is_open = true;
         self.enter_until = None;
-        self.leave_until = (!self.is_inside).then_some(now + duration);
+        let until = now + duration;
+        self.leave_until =
+            (!self.is_inside).then_some(self.hold_until.map_or(until, |hold| hold.max(until)));
+    }
+
+    pub fn hold_open_for(&mut self, now: Instant, duration: Duration) {
+        self.hold_until = Some(now + duration);
+        self.reveal_for(now, duration);
     }
 
     pub fn advance(&mut self, now: Instant) {
+        if self.hold_until.is_some_and(|until| until <= now) {
+            self.hold_until = None;
+        }
         if self.enter_until.is_some_and(|until| until <= now) {
             self.enter_until = None;
             self.is_open = self.is_inside;

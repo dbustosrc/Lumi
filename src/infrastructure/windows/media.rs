@@ -10,10 +10,12 @@ use windows::Foundation::TypedEventHandler;
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession as Session,
     GlobalSystemMediaTransportControlsSessionManager as Manager,
+    GlobalSystemMediaTransportControlsSessionMediaProperties as MediaProperties,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
 };
-use windows::Storage::Streams::DataReader;
+use windows::Storage::Streams::IRandomAccessStream;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use windows::core::{AgileReference, Interface};
 
 use super::volume::VolumeMonitor;
 
@@ -86,18 +88,25 @@ async fn run(
     let mut session = None;
     let mut last_track = None;
     let mut last_volume = None;
+    let mut pending_artwork: Option<(String, MediaProperties)> = None;
+    let mut artwork_task: Option<tokio::task::JoinHandle<(String, Option<Artwork>)>> = None;
     type MediaRead = (
         Session,
         Result<
-            windows::core::Result<(
-                PlaybackSnapshot,
-                windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
-            )>,
+            windows::core::Result<(PlaybackSnapshot, MediaProperties)>,
             tokio::time::error::Elapsed,
         >,
     );
     let mut reads: tokio::task::JoinSet<MediaRead> = tokio::task::JoinSet::new();
     loop {
+        // Keep the decoding slot until the blocking worker exits and retain only the newest request.
+        if artwork_task.is_none()
+            && let Some((track_id, properties)) = pending_artwork.take()
+        {
+            artwork_task = Some(tokio::task::spawn_local(async move {
+                (track_id, read_artwork(properties).await)
+            }));
+        }
         tokio::select! {
             changed = settings.changed() => {
                 if changed.is_err() { break; }
@@ -113,6 +122,7 @@ async fn run(
                         manager = None;
                         session = None;
                         last_track = None;
+                        pending_artwork = None;
                         let _ = events.send(AppEvent::WindowsPlayback(PlaybackSnapshot::idle()));
                     }
                 }
@@ -169,16 +179,22 @@ async fn run(
                     last_track = id.clone();
                     session = Some(target);
                     let _ = events.send(AppEvent::WindowsPlayback(playback));
-                    if changed && let Some(track_id) = id {
-                        let events = events.clone();
-                        tokio::task::spawn_local(async move {
-                            let artwork = tokio::time::timeout(Duration::from_secs(2), read_artwork(properties)).await.ok().flatten();
-                            let _ = events.send(AppEvent::WindowsArtwork { track_id, artwork });
-                        });
+                    if changed {
+                        pending_artwork = id.map(|track_id| (track_id, properties));
                     }
                 } else {
                     session = None; last_track = None;
+                    pending_artwork = None;
                     let _ = events.send(AppEvent::WindowsPlayback(PlaybackSnapshot::idle()));
+                }
+            }
+            result = async { artwork_task.as_mut().expect("guarded artwork task").await }, if artwork_task.is_some() => {
+                artwork_task = None;
+                if let Ok((track_id, artwork)) = result
+                    && last_track.as_ref() == Some(&track_id)
+                    && pending_artwork.is_none()
+                {
+                    let _ = events.send(AppEvent::WindowsArtwork { track_id, artwork });
                 }
             }
             _ = media_changed.notified(), if manager.is_some() && reads.is_empty() => {
@@ -192,6 +208,7 @@ async fn run(
                         retry_at = Instant::now() + Duration::from_secs(5);
                         session = None;
                         last_track = None;
+                        pending_artwork = None;
                         let _ = events.send(AppEvent::WindowsPlayback(PlaybackSnapshot::idle()));
                         continue;
                     }
@@ -209,6 +226,7 @@ async fn run(
                     });
                 } else {
                     session = None;
+                    pending_artwork = None;
                     if last_track.take().is_some() { let _ = events.send(AppEvent::WindowsPlayback(PlaybackSnapshot::idle())); }
                 }
             }
@@ -232,30 +250,21 @@ fn monitor_volume(changed: &Arc<Notify>) -> Option<VolumeMonitor> {
         .ok()
 }
 
-async fn read_artwork(
-    properties: windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
-) -> Option<Artwork> {
-    let stream = properties
-        .Thumbnail()
-        .ok()?
-        .OpenReadAsync()
-        .ok()?
+async fn read_artwork(properties: MediaProperties) -> Option<Artwork> {
+    let open = properties.Thumbnail().ok()?.OpenReadAsync().ok()?;
+    let stream = tokio::time::timeout(Duration::from_secs(2), open)
         .await
+        .ok()?
         .ok()?;
-    let size = u32::try_from(stream.Size().ok()?).ok()?;
     // Media sessions are external providers; avoid an unbounded thumbnail allocation.
-    if size > 32 * 1024 * 1024 {
+    if stream.Size().ok()? > 32 * 1024 * 1024 {
         tracing::warn!(event = "log.windowsMedia.artworkTooLarge");
         return None;
     }
-    let reader = DataReader::CreateDataReader(&stream).ok()?;
-    if reader.LoadAsync(size).ok()?.await.ok()? != size {
-        return None;
-    }
-    let mut bytes = vec![0; size as usize];
-    reader.ReadBytes(&mut bytes).ok()?;
+    let stream: IRandomAccessStream = stream.cast().ok()?;
+    let stream = AgileReference::new(&stream).ok()?;
     tokio::task::spawn_blocking(move || {
-        let image = super::thumbnail::from_bytes(&bytes, 256).ok()?;
+        let image = super::thumbnail::from_random_access_stream(&stream, 256).ok()?;
         let (width, height) = image.dimensions();
         Some(Artwork::from_rgba(image.into_raw(), width, height))
     })
@@ -286,12 +295,7 @@ fn is_playing(session: &Session) -> bool {
         .and_then(|info| info.PlaybackStatus())
         .is_ok_and(|state| state == Status::Playing)
 }
-async fn snapshot(
-    session: &Session,
-) -> windows::core::Result<(
-    PlaybackSnapshot,
-    windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
-)> {
+async fn snapshot(session: &Session) -> windows::core::Result<(PlaybackSnapshot, MediaProperties)> {
     let properties = session.TryGetMediaPropertiesAsync()?.await?;
     let timeline = session.GetTimelineProperties()?;
     let start = timeline.StartTime()?.Duration;

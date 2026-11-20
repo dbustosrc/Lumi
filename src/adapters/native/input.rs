@@ -17,7 +17,7 @@ use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindow
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, Result, w};
 pub const EDIT_STYLE_PROPERTY: windows::core::PCWSTR = w!("LumiEditStyle");
-pub const EDIT_BACKGROUNDS: [u32; 4] = [0x080909, 0x242729, 0x212124, 0x333336];
+pub const EDIT_BACKGROUNDS: [u32; 3] = [0x080909, 0x242729, 0x333336];
 pub const WM_EDIT_COMMIT: u32 = WM_APP + 0x13;
 pub const WM_EDIT_CANCEL: u32 = WM_APP + 0x14;
 pub const WM_EDIT_TAB: u32 = WM_APP + 0x15;
@@ -142,8 +142,7 @@ impl Inputs {
                     let style = match input.key {
                         Field::TaskTitle => 0,
                         Field::TaskTime => 1,
-                        Field::ShelfText => 2,
-                        _ => 3,
+                        _ => 2,
                     };
                     SetPropW(
                         hwnd,

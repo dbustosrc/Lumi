@@ -14,6 +14,7 @@ pub struct Request {
     pub sender: String,
     pub pin: String,
     pub files: Vec<String>,
+    pub text_description: Option<String>,
     pub bytes: u64,
 }
 
@@ -40,6 +41,7 @@ pub enum Tray {
 pub enum Command {
     Browse,
     Stage(Vec<PathBuf>),
+    StageText(String),
     Remove(Tray, uuid::Uuid),
     Clear(Tray),
     Discover(bool),

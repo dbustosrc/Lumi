@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.0
+
+- Search for songs from the Music page when Music Assistant is connected. Select a result to play it on the configured player or on Lumi.
+- Send and receive text and links through Quick Share. Drag files or selected text onto the notch, or paste them into Shelf or Quick Share with Ctrl+V.
+- Keep the selected tray open after a drop. Shelf, Quick Share, and the task list share a dark background, and both Quick Share trays use Shelf's dashed outline.
+- Reduce memory use by deferring hardware graphics setup until the notch first expands, bounding the Sendspin audio buffer, and resizing Windows media artwork before rendering.
+
 ## 1.5.0
 
 - Added a Pages setting to reorder notch pages by dragging, or disable pages and their background features.

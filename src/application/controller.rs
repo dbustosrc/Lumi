@@ -15,6 +15,7 @@ use super::todo_service::{TodoService, TodoServiceError};
 use super::voice_capture::VoiceCapture;
 use crate::domain::device::PowerStatus;
 use crate::domain::hover::{HOVER_LEAVE_GRACE, HoverState};
+use crate::domain::media::MediaConnection;
 use crate::domain::notch::{NotchContext, NotchPage, NotchView, Peek, resolve_view};
 use crate::domain::{ports::PortError, widgets::FocusDay};
 
@@ -48,6 +49,7 @@ pub struct NotchController {
     services: ControllerServices,
     presenter: Arc<dyn NotchPresenter>,
     context: NotchContext,
+    media_connection: MediaConnection,
     view: NotchView,
     peek_until: Option<Instant>,
     hover: HoverState,
@@ -85,6 +87,7 @@ impl NotchController {
             services,
             presenter,
             context: NotchContext::default(),
+            media_connection: MediaConnection::default(),
             view: NotchView::Closed,
             peek_until: None,
             hover: HoverState::default(),
@@ -211,14 +214,19 @@ impl NotchController {
                 self.keep_mascot_awake(Instant::now());
             }
             AppEvent::MascotActivity => self.keep_mascot_awake(Instant::now()),
-            AppEvent::ShelfTextDropped(text) => {
+            AppEvent::TextDropped { text, destination } => {
                 self.on_file_drag_hover(None);
-                if !self.desktop.pages.contains(NotchPage::Shelf) {
-                    return;
+                match destination {
+                    FileDropDestination::Shelf if self.desktop.pages.contains(NotchPage::Shelf) => {
+                        self.reveal_drop_destination(NotchPage::Shelf);
+                        let result = self.services.shelf.add_text(text);
+                        self.after_shelf_mutation(result);
+                    }
+                    FileDropDestination::QuickShare => {
+                        self.stage_quick_share(super::quick_share::Command::StageText(text))
+                    }
+                    _ => {}
                 }
-                self.on_drop_received();
-                let result = self.services.shelf.add_text(text);
-                self.after_shelf_mutation(result);
             }
             AppEvent::Fullscreen(active) => {
                 self.is_fullscreen = active;
@@ -256,7 +264,15 @@ impl NotchController {
                 self.mark_activity_if_playing();
             }
             AppEvent::MediaConnection(state) => {
+                self.media_connection = state;
+                if state != MediaConnection::Connected {
+                    self.context.is_music_search_open = false;
+                }
                 self.presenter.apply(ViewUpdate::MediaConnection(state));
+            }
+            AppEvent::MusicCatalog { id, result } => {
+                self.presenter
+                    .apply(ViewUpdate::MusicCatalog { id, result });
             }
             AppEvent::ArtworkLoaded { track_id, artwork } => {
                 self.services.media.on_artwork(&track_id, artwork);
@@ -347,7 +363,8 @@ impl NotchController {
             DrinkWater | ResetWater => Some(NotchPage::Water),
             AddShelfText(_) | BrowseShelfFiles | OpenShelfItem(_) | RemoveShelfItem(_)
             | ClearShelf => Some(NotchPage::Shelf),
-            ToggleLyrics | Media(_) | SeekToFraction(_) | SeekToLyric(_) => Some(NotchPage::Music),
+            ToggleLyrics | ToggleMusicSearch | MusicCatalog(_) | Media(_) | SeekToFraction(_)
+            | SeekToLyric(_) => Some(NotchPage::Music),
             _ => None,
         };
         if page.is_some_and(|page| !self.desktop.pages.contains(page)) {
@@ -435,6 +452,18 @@ impl NotchController {
                 }
             }
             UserIntent::ToggleLyrics => self.toggle_lyrics(),
+            UserIntent::ToggleMusicSearch => {
+                if self.media_connection == MediaConnection::Connected && !self.is_fullscreen {
+                    self.context.is_music_search_open = !self.context.is_music_search_open;
+                }
+            }
+            UserIntent::MusicCatalog(command) => {
+                if self.view == NotchView::MusicSearch
+                    && self.media_connection == MediaConnection::Connected
+                {
+                    self.services.media.catalog(command);
+                }
+            }
             UserIntent::Media(command) => self.services.media.execute(command),
             UserIntent::SeekToFraction(fraction) => self.services.media.seek_to_fraction(fraction),
             UserIntent::SeekToLyric(index) => self.services.media.seek_to_lyric(index),
@@ -472,22 +501,18 @@ impl NotchController {
     }
 
     fn on_file_drag_hover(&mut self, hover: Option<DropHover>) {
-        let hover = hover.filter(|hover| match hover {
-            DropHover::Text => self.desktop.pages.contains(NotchPage::Shelf),
-            DropHover::Files(_) => {
-                self.desktop.pages.contains(NotchPage::Shelf)
-                    || self.desktop.pages.contains(NotchPage::QuickShare)
-            }
+        let hover = hover.filter(|_| {
+            self.desktop.pages.contains(NotchPage::Shelf)
+                || self.desktop.pages.contains(NotchPage::QuickShare)
         });
         self.mark_activity();
         let is_hover = hover.is_some();
-        self.context.is_choosing_drop_destination = matches!(hover, Some(DropHover::Files(_)));
+        self.context.is_choosing_drop_destination = is_hover;
         if let Some(hover) = hover {
             self.peek_until = None;
             self.context.peek = None;
             match hover {
-                DropHover::Text => self.context.page = NotchPage::Shelf,
-                DropHover::Files(destination) => self
+                DropHover::Text(destination) | DropHover::Files(destination) => self
                     .presenter
                     .apply(ViewUpdate::FileDropDestination(destination)),
             }
@@ -502,22 +527,22 @@ impl NotchController {
         self.on_file_drag_hover(None);
         match destination {
             FileDropDestination::Shelf if self.desktop.pages.contains(NotchPage::Shelf) => {
-                self.reveal_shelf_briefly();
+                self.reveal_drop_destination(NotchPage::Shelf);
                 let result = self.services.shelf.add_paths(&paths);
                 self.after_shelf_mutation(result);
             }
-            FileDropDestination::QuickShare
-                if self.desktop.pages.contains(NotchPage::QuickShare) =>
-            {
-                self.context.page = NotchPage::QuickShare;
-                self.hover.reveal_for(Instant::now(), POST_DROP_VISIBLE_FOR);
-                self.presenter.apply(ViewUpdate::QuickShareStaged);
-                let _ = self
-                    .services
-                    .quick_share
-                    .send(super::quick_share::Command::Stage(paths));
+            FileDropDestination::QuickShare => {
+                self.stage_quick_share(super::quick_share::Command::Stage(paths))
             }
             _ => {}
+        }
+    }
+
+    fn stage_quick_share(&mut self, command: super::quick_share::Command) {
+        if self.desktop.pages.contains(NotchPage::QuickShare) {
+            self.reveal_drop_destination(NotchPage::QuickShare);
+            self.presenter.apply(ViewUpdate::QuickShareStaged);
+            let _ = self.services.quick_share.send(command);
         }
     }
 
@@ -525,26 +550,16 @@ impl NotchController {
         if !self.desktop.pages.contains(NotchPage::Shelf) {
             return;
         }
-        self.reveal_shelf_briefly();
+        self.reveal_drop_destination(NotchPage::Shelf);
         let result = self.services.shelf.add_paths(paths);
         self.after_shelf_mutation(result);
     }
 
-    fn on_drop_received(&mut self) {
+    fn reveal_drop_destination(&mut self, page: NotchPage) {
         self.mark_activity();
-        self.context.page = NotchPage::Shelf;
-        let is_open = self.context.is_hovered || self.context.is_interaction_locked;
-        if !self.context.is_mascot_enabled || is_open {
-            self.hover.reveal_for(Instant::now(), POST_DROP_VISIBLE_FOR);
-        } else {
-            self.keep_mascot_awake(Instant::now());
-        }
-    }
-
-    fn reveal_shelf_briefly(&mut self) {
-        self.mark_activity();
-        self.context.page = NotchPage::Shelf;
-        self.hover.reveal_for(Instant::now(), POST_DROP_VISIBLE_FOR);
+        self.context.page = page;
+        self.hover
+            .hold_open_for(Instant::now(), POST_DROP_VISIBLE_FOR);
     }
 
     fn on_outbound_file_drag(&mut self, is_active: bool, is_cursor_inside: bool) {
@@ -735,7 +750,8 @@ impl NotchController {
         if !self.services.media.lyrics_enabled() {
             return;
         }
-        self.context.is_lyrics_mode = !self.context.is_lyrics_mode;
+        self.context.is_lyrics_mode =
+            std::mem::take(&mut self.context.is_music_search_open) || !self.context.is_lyrics_mode;
         self.presenter
             .apply(ViewUpdate::LyricsMode(self.context.is_lyrics_mode));
     }
@@ -970,7 +986,7 @@ impl NotchController {
 
     fn refresh_media(&mut self, now: Instant) {
         let media = &mut self.services.media;
-        if self.view == NotchView::Music {
+        if matches!(self.view, NotchView::Music | NotchView::MusicSearch) {
             media.refresh_progress(now);
         }
         if self.view == NotchView::Lyrics {
@@ -1007,9 +1023,13 @@ impl NotchController {
     }
 
     fn refresh_view(&mut self) {
+        if self.context.page != NotchPage::Music || self.is_fullscreen {
+            self.context.is_music_search_open = false;
+        }
         let voice_busy = self.services.voice.is_busy();
         self.context.is_voice_busy = voice_busy;
         self.context.is_interaction_locked = self.is_text_editing
+            || self.context.is_music_search_open
             || self.is_outbound_dragging
             || (voice_busy && !self.context.is_mascot_enabled);
         let view = resolve_view(&self.context);
@@ -1058,7 +1078,7 @@ impl NotchController {
         }
         match self.view {
             NotchView::Lyrics => Some(LYRICS_TICK),
-            NotchView::Music => Some(PROGRESS_TICK),
+            NotchView::Music | NotchView::MusicSearch => Some(PROGRESS_TICK),
             _ => None,
         }
     }

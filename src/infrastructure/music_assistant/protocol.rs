@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::domain::media::{PlaybackStatus, Track};
+use crate::domain::media::{CatalogTrack, PlaybackStatus, Track};
 
 pub const MIN_SCHEMA_VERSION: u64 = 31;
 const ARTWORK_REQUEST_SIZE: u32 = 256;
@@ -94,6 +94,28 @@ fn join_artists(media: &Value) -> String {
         .filter_map(|artist| artist.get("name").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+pub fn parse_search_result(result: &Value) -> Option<Vec<CatalogTrack>> {
+    Some(
+        result
+            .get("tracks")?
+            .as_array()?
+            .iter()
+            .filter_map(|track| {
+                let uri = track.get("uri")?.as_str()?;
+                let title = track.get("name")?.as_str()?;
+                if uri.is_empty() || title.is_empty() {
+                    return None;
+                }
+                Some(CatalogTrack {
+                    uri: uri.to_owned(),
+                    title: title.to_owned(),
+                    artist: join_artists(track),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn find_image(item: &Value) -> Option<&Value> {

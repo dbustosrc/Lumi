@@ -6,7 +6,9 @@ use uuid::Uuid;
 use super::settings::AppSettings;
 use crate::domain::device::{HeadphoneStatus, PowerStatus};
 use crate::domain::lyrics::SyncedLyrics;
-use crate::domain::media::{Artwork, MediaCommand, MediaConnection, PlaybackSnapshot};
+use crate::domain::media::{
+    Artwork, CatalogCommand, CatalogResult, MediaCommand, MediaConnection, PlaybackSnapshot,
+};
 use crate::domain::notch::NotchPage;
 use crate::domain::ports::PortError;
 use crate::domain::shelf::ShelfThumbnail;
@@ -19,7 +21,7 @@ pub enum FileDropDestination {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropHover {
-    Text,
+    Text(Option<FileDropDestination>),
     Files(Option<FileDropDestination>),
 }
 
@@ -47,6 +49,8 @@ pub enum UserIntent {
     NextPage,
     PreviousPage,
     ToggleLyrics,
+    ToggleMusicSearch,
+    MusicCatalog(CatalogCommand),
     Media(MediaCommand),
     SeekToFraction(f32),
     SeekToLyric(usize),
@@ -90,7 +94,10 @@ pub enum AppEvent {
     CapsLock(bool),
     InputLanguage(String),
     Wifi(crate::domain::device::WifiState),
-    ShelfTextDropped(String),
+    TextDropped {
+        text: String,
+        destination: FileDropDestination,
+    },
     Fullscreen(bool),
     WindowsPlayback(PlaybackSnapshot),
     WindowsArtwork {
@@ -104,6 +111,10 @@ pub enum AppEvent {
     BackgroundContent(bool),
     Playback(PlaybackSnapshot),
     MediaConnection(MediaConnection),
+    MusicCatalog {
+        id: Uuid,
+        result: CatalogResult,
+    },
     ArtworkLoaded {
         track_id: String,
         artwork: Option<Artwork>,

@@ -16,17 +16,23 @@ use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use self::protocol::{MIN_SCHEMA_VERSION, ServerInfo, parse_queue, parse_seconds, websocket_url};
+use self::protocol::{
+    MIN_SCHEMA_VERSION, ServerInfo, parse_queue, parse_search_result, parse_seconds, websocket_url,
+};
 use self::sendspin_player::{local_player_id, supervise_sendspin_player};
 use self::tracker::QueueTracker;
 use crate::application::events::{AppEvent, EventSender};
 use crate::application::settings::{AppSettings, MusicAssistantSettings};
-use crate::domain::media::{MediaCommand, MediaConnection, PlaybackSnapshot};
-use crate::domain::ports::MediaController;
+use crate::domain::media::{
+    CatalogCommand, CatalogResult, MediaCommand, MediaConnection, PlaybackSnapshot,
+};
+use crate::domain::ports::{MediaController, MusicCatalog};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const QUEUES_REQUEST_ID: &str = "lumi-queues";
 const AUTH_REQUEST_ID: &str = "lumi-auth";
+const SEARCH_PREFIX: &str = "lumi-search-";
+const PLAY_PREFIX: &str = "lumi-play-";
 const MIN_RETRY_DELAY: Duration = Duration::from_secs(2);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
@@ -50,11 +56,28 @@ impl SessionError {
 
 /// [`MediaController`] backed by the running Music Assistant session.
 pub struct MusicAssistantController {
-    commands: mpsc::UnboundedSender<MediaCommand>,
+    commands: mpsc::UnboundedSender<SessionCommand>,
 }
 
 impl MediaController for MusicAssistantController {
     fn execute(&self, command: MediaCommand) {
+        self.send(SessionCommand::Transport(command));
+    }
+}
+
+impl MusicCatalog for MusicAssistantController {
+    fn catalog(&self, command: CatalogCommand) {
+        self.send(SessionCommand::Catalog(command));
+    }
+}
+
+enum SessionCommand {
+    Transport(MediaCommand),
+    Catalog(CatalogCommand),
+}
+
+impl MusicAssistantController {
+    fn send(&self, command: SessionCommand) {
         if self.commands.send(command).is_err() {
             tracing::warn!(event = "log.music.supervisorStopped");
         }
@@ -78,7 +101,7 @@ pub fn spawn_music_assistant(
 async fn supervise(
     mut settings: watch::Receiver<AppSettings>,
     events: EventSender,
-    mut commands: mpsc::UnboundedReceiver<MediaCommand>,
+    mut commands: mpsc::UnboundedReceiver<SessionCommand>,
 ) {
     let mut retry_delay = MIN_RETRY_DELAY;
     loop {
@@ -148,16 +171,16 @@ async fn wait_for_change(
     false
 }
 
-fn discard_stale_commands(commands: &mut mpsc::UnboundedReceiver<MediaCommand>) {
-    while let Ok(command) = commands.try_recv() {
-        tracing::warn!(event = "log.music.commandIgnoredDisconnected", command = ?command);
+fn discard_stale_commands(commands: &mut mpsc::UnboundedReceiver<SessionCommand>) {
+    while commands.try_recv().is_ok() {
+        tracing::warn!(event = "log.music.commandIgnoredDisconnected");
     }
 }
 
 async fn run_session(
     config: &MusicAssistantSettings,
     events: &EventSender,
-    commands: &mut mpsc::UnboundedReceiver<MediaCommand>,
+    commands: &mut mpsc::UnboundedReceiver<SessionCommand>,
 ) -> Result<(), SessionError> {
     let (mut socket, server) = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let url = websocket_url(&config.server_url);
@@ -273,7 +296,7 @@ impl Session {
         &mut self,
         socket: &mut Socket,
         events: &EventSender,
-        commands: &mut mpsc::UnboundedReceiver<MediaCommand>,
+        commands: &mut mpsc::UnboundedReceiver<SessionCommand>,
     ) -> Result<(), SessionError> {
         loop {
             tokio::select! {
@@ -281,14 +304,19 @@ impl Session {
                     Some(message) => self.handle_message(&message, events),
                     None => return Ok(()),
                 },
-                Some(command) = commands.recv() => {
-                    self.send_media_command(socket, command).await?;
-                }
+                Some(command) = commands.recv() => match command {
+                    SessionCommand::Transport(command) => self.send_media_command(socket, command).await?,
+                    SessionCommand::Catalog(command) => self.send_catalog_command(socket, command).await?,
+                },
             }
         }
     }
 
     fn handle_message(&mut self, message: &Value, events: &EventSender) {
+        if let Some((id, result)) = catalog_reply(message) {
+            publish(events, AppEvent::MusicCatalog { id, result });
+            return;
+        }
         if message.get("message_id").and_then(Value::as_str) == Some(QUEUES_REQUEST_ID) {
             let queues = message
                 .get("result")
@@ -350,6 +378,46 @@ impl Session {
         self.next_id += 1;
         send_command(socket, &format!("lumi-{}", self.next_id), name, args).await
     }
+
+    async fn send_catalog_command(
+        &self,
+        socket: &mut Socket,
+        command: CatalogCommand,
+    ) -> Result<(), SessionError> {
+        let (message_id, name, args) = match command {
+            CatalogCommand::Search { id, query } => (
+                format!("{SEARCH_PREFIX}{id}"),
+                "music/search",
+                json!({ "search_query": query, "media_types": ["track"] }),
+            ),
+            CatalogCommand::Play { id, uri } => (
+                format!("{PLAY_PREFIX}{id}"),
+                "player_queues/play_media",
+                json!({ "queue_id": self.tracker.playback_queue_id(), "media": uri, "option": "play" }),
+            ),
+        };
+        send_command(socket, &message_id, name, args).await
+    }
+}
+
+fn catalog_reply(message: &Value) -> Option<(uuid::Uuid, CatalogResult)> {
+    let message_id = message.get("message_id")?.as_str()?;
+    let search = message_id.strip_prefix(SEARCH_PREFIX);
+    let id = search
+        .or_else(|| message_id.strip_prefix(PLAY_PREFIX))?
+        .parse()
+        .ok()?;
+    let result = if message.get("error_code").is_some() {
+        CatalogResult::Failed
+    } else if search.is_some() {
+        message
+            .get("result")
+            .and_then(parse_search_result)
+            .map_or(CatalogResult::Failed, CatalogResult::Tracks)
+    } else {
+        CatalogResult::Playing
+    };
+    Some((id, result))
 }
 
 fn publish_snapshot(events: &EventSender, snapshot: Option<PlaybackSnapshot>) {

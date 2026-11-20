@@ -174,6 +174,32 @@ fn forced_reveal_stays_open_while_pointer_is_inside() {
 }
 
 #[test]
+fn post_drop_hold_survives_leave_and_reentry_until_minimum_visible_duration() {
+    const POST_DROP_VISIBLE_FOR: Duration = Duration::from_millis(1600);
+
+    let start = Instant::now();
+    let mut hover = HoverState::default();
+    hover.set_inside(true, start);
+    hover.advance(start + HOVER_OPEN_DELAY);
+    assert!(hover.is_open());
+
+    let dropped = start + HOVER_OPEN_DELAY + Duration::from_millis(10);
+    hover.hold_open_for(dropped, POST_DROP_VISIBLE_FOR);
+    let left = dropped + Duration::from_millis(20);
+    hover.set_inside(false, left);
+    let hold_until = dropped + POST_DROP_VISIBLE_FOR;
+    assert_eq!(hover.deadline(), Some(hold_until));
+
+    let before_minimum = hold_until - Duration::from_millis(1);
+    hover.advance(before_minimum);
+    assert!(hover.is_open());
+    hover.set_inside(true, before_minimum);
+    assert_eq!(hover.deadline(), None);
+    hover.advance(hold_until + Duration::from_secs(1));
+    assert!(hover.is_open());
+}
+
+#[test]
 fn hover_close_cycles_without_confirmed_content_never_select_minimal() {
     let mut hover = HoverState::default();
     let mut now = Instant::now();
@@ -554,4 +580,25 @@ fn open_lock_and_settings_changes_preserve_the_open_page_and_existing_priorities
     context.is_hovered = true;
     context.page = NotchPage::Todo;
     assert_eq!(resolve_view(&context), NotchView::Todo);
+}
+
+#[test]
+fn music_search_overlays_only_the_music_page_when_open() {
+    let mut context = NotchContext {
+        is_hovered: true,
+        page: NotchPage::Music,
+        is_music_search_open: true,
+        ..NotchContext::default()
+    };
+    assert_eq!(resolve_view(&context), NotchView::MusicSearch);
+
+    context.page = NotchPage::Todo;
+    assert_eq!(resolve_view(&context), NotchView::Todo);
+
+    context.page = NotchPage::Music;
+    context.is_music_search_open = false;
+    context.is_lyrics_mode = true;
+    context.has_lyrics = true;
+    context.is_playing = true;
+    assert_eq!(resolve_view(&context), NotchView::Lyrics);
 }

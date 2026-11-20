@@ -87,8 +87,8 @@ fn read_text(object: &IDataObject) -> windows::core::Result<String> {
     }
 }
 
-pub fn clipboard_text() -> Result<String, PortError> {
-    unsafe { OleGetClipboard().and_then(|object| read_text(&object)) }
+pub fn clipboard_event(destination: FileDropDestination) -> Result<Option<AppEvent>, PortError> {
+    unsafe { OleGetClipboard().and_then(|object| content_event(&object, destination)) }
         .map_err(|error| PortError::new("shelf.error.clipboard", error))
 }
 
@@ -148,7 +148,10 @@ impl ShelfDropTarget_Impl {
     }
 }
 
-fn read_file_paths(data: &IDataObject) -> windows::core::Result<Vec<PathBuf>> {
+fn with_file_drop<T>(
+    data: &IDataObject,
+    read: impl FnOnce(HDROP) -> T,
+) -> windows::core::Result<T> {
     unsafe {
         let medium = Medium(data.GetData(&format(CF_HDROP.0))?);
         if medium.0.tymed != TYMED_HGLOBAL.0 as u32 {
@@ -156,7 +159,12 @@ fn read_file_paths(data: &IDataObject) -> windows::core::Result<Vec<PathBuf>> {
                 windows::Win32::Foundation::E_INVALIDARG,
             ));
         }
-        let drop = HDROP(medium.0.u.hGlobal.0);
+        Ok(read(HDROP(medium.0.u.hGlobal.0)))
+    }
+}
+
+fn read_file_paths(data: &IDataObject) -> windows::core::Result<Vec<PathBuf>> {
+    with_file_drop(data, |drop| unsafe {
         let count = DragQueryFileW(drop, u32::MAX, None);
         let mut paths = Vec::new();
         for index in 0..count {
@@ -167,8 +175,59 @@ fn read_file_paths(data: &IDataObject) -> windows::core::Result<Vec<PathBuf>> {
                 paths.push(PathBuf::from(std::ffi::OsString::from_wide(&path[..read])));
             }
         }
-        Ok(paths)
+        paths
+    })
+}
+
+fn content_hover(
+    data: &IDataObject,
+    destination: Option<FileDropDestination>,
+) -> Option<DropHover> {
+    let (files, text) = unsafe {
+        (
+            data.QueryGetData(&format(CF_HDROP.0)).is_ok(),
+            data.QueryGetData(&format(CF_UNICODETEXT.0)).is_ok(),
+        )
+    };
+    // Shell data objects can advertise CF_HDROP without containing files.
+    if files
+        && (!text
+            || with_file_drop(
+                data,
+                |drop| unsafe { DragQueryFileW(drop, u32::MAX, None) } > 0,
+            )
+            .unwrap_or(false))
+    {
+        Some(DropHover::Files(destination))
+    } else if text {
+        Some(DropHover::Text(destination))
+    } else {
+        None
     }
+}
+
+fn event_for_hover(
+    data: &IDataObject,
+    hover: DropHover,
+) -> windows::core::Result<Option<AppEvent>> {
+    match hover {
+        DropHover::Files(Some(destination)) => {
+            let paths = read_file_paths(data)?;
+            Ok((!paths.is_empty()).then_some(AppEvent::FilesDropped { paths, destination }))
+        }
+        DropHover::Text(Some(destination)) => {
+            let text = read_text(data)?;
+            Ok((!text.trim().is_empty()).then_some(AppEvent::TextDropped { text, destination }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn content_event(
+    data: &IDataObject,
+    destination: FileDropDestination,
+) -> windows::core::Result<Option<AppEvent>> {
+    content_hover(data, Some(destination)).map_or(Ok(None), |hover| event_for_hover(data, hover))
 }
 
 impl IDropTarget_Impl for ShelfDropTarget_Impl {
@@ -193,15 +252,8 @@ impl IDropTarget_Impl for ShelfDropTarget_Impl {
         {
             None
         } else {
-            data.as_ref().and_then(|data| unsafe {
-                if data.QueryGetData(&format(CF_HDROP.0)).is_ok() {
-                    Some(DropHover::Files(self.destination_at(point)))
-                } else if shelf && data.QueryGetData(&format(CF_UNICODETEXT.0)).is_ok() {
-                    Some(DropHover::Text)
-                } else {
-                    None
-                }
-            })
+            data.as_ref()
+                .and_then(|data| content_hover(data, self.destination_at(point)))
         };
         self.update_hover(hover);
         unsafe {
@@ -215,20 +267,13 @@ impl IDropTarget_Impl for ShelfDropTarget_Impl {
         point: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
-        let hover = self.hover.get().map(|hover| match hover {
-            DropHover::Files(_) if allows_copy(unsafe { *effect }) => {
-                DropHover::Files(self.destination_at(point))
-            }
-            DropHover::Files(_) => DropHover::Files(None),
-            DropHover::Text => DropHover::Text,
-        });
+        let destination = allows_copy(unsafe { *effect })
+            .then(|| self.destination_at(point))
+            .flatten();
+        let hover = self.hover.get().map(|hover| hover_at(hover, destination));
         self.update_hover(hover);
         unsafe {
-            *effect = if allows_copy(*effect) {
-                drop_effect(hover)
-            } else {
-                DROPEFFECT_NONE
-            };
+            *effect = drop_effect(hover);
         }
         Ok(())
     }
@@ -250,21 +295,12 @@ impl IDropTarget_Impl for ShelfDropTarget_Impl {
         let Some(hover) = self.hover.take() else {
             return Ok(());
         };
-        let event =
-            match (copy_allowed, hover) {
-                (false, _) => Ok(None),
-                (true, DropHover::Files(_)) => {
-                    self.destination_at(point).map_or(Ok(None), |destination| {
-                        let paths = read_file_paths(data.ok()?)?;
-                        Ok((!paths.is_empty())
-                            .then_some(AppEvent::FilesDropped { paths, destination }))
-                    })
-                }
-                (true, DropHover::Text) => data
-                    .ok()
-                    .and_then(read_text)
-                    .map(|text| Some(AppEvent::ShelfTextDropped(text))),
-            };
+        let event = if copy_allowed && let Some(destination) = self.destination_at(point) {
+            data.ok()
+                .and_then(|data| event_for_hover(data, hover_at(hover, Some(destination))))
+        } else {
+            Ok(None)
+        };
         match event {
             Ok(Some(event)) => {
                 if self.events.send(event).is_ok() {
@@ -282,8 +318,18 @@ impl IDropTarget_Impl for ShelfDropTarget_Impl {
     }
 }
 
+fn hover_at(hover: DropHover, destination: Option<FileDropDestination>) -> DropHover {
+    match hover {
+        DropHover::Files(_) => DropHover::Files(destination),
+        DropHover::Text(_) => DropHover::Text(destination),
+    }
+}
+
 fn drop_effect(hover: Option<DropHover>) -> DROPEFFECT {
-    if matches!(hover, Some(DropHover::Files(Some(_)) | DropHover::Text)) {
+    if matches!(
+        hover,
+        Some(DropHover::Files(Some(_)) | DropHover::Text(Some(_)))
+    ) {
         DROPEFFECT_COPY
     } else {
         DROPEFFECT_NONE

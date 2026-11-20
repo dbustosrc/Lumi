@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use super::lyrics::SyncedLyrics;
-use super::media::{Artwork, MediaCommand, Track};
+use super::media::{Artwork, CatalogCommand, MediaCommand, Track};
 use super::shelf::{ShelfItem, ShelfPathMetadata, ShelfThumbnail};
 use super::todo::TodoTask;
 
@@ -38,6 +38,10 @@ impl PortError {
 /// Sends transport commands to the media source (Music Assistant).
 pub trait MediaController: Send + Sync {
     fn execute(&self, command: MediaCommand);
+}
+
+pub trait MusicCatalog: MediaController {
+    fn catalog(&self, command: CatalogCommand);
 }
 
 pub trait VolumeController: Send + Sync {

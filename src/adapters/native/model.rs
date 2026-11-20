@@ -9,7 +9,9 @@ use crate::application::reminders::{FocusPhase, UtilityState};
 use crate::application::settings::AppSettings;
 use crate::domain::calendar::CalendarGrid;
 use crate::domain::device::{HeadphoneStatus, PowerStatus};
-use crate::domain::media::{Artwork, MediaConnection, Track};
+use crate::domain::media::{
+    Artwork, CatalogCommand, CatalogResult, CatalogTrack, MediaConnection, Track,
+};
 use crate::domain::notch::NotchView;
 use crate::domain::todo::{TodoProgress, TodoTask};
 use crate::domain::water::WaterState;
@@ -19,6 +21,77 @@ pub use super::mascot::VARIANTS_PER_CLIP;
 pub use super::mascot::{CursorSample, MascotChoreographer, MascotClip, MascotLiveState};
 
 pub const MASCOT_PROXIMITY_DIPS: f32 = 96. * 5. / 2.54;
+
+#[derive(Default)]
+pub struct MusicSearch {
+    pub query: String,
+    pub tracks: Vec<CatalogTrack>,
+    pub scroll: f32,
+    pub status: Option<&'static str>,
+    pending: Option<(Uuid, Instant)>,
+}
+
+impl MusicSearch {
+    pub fn submit(&mut self, now: Instant) -> Option<CatalogCommand> {
+        let query = self.query.trim().to_owned();
+        self.tracks.clear();
+        self.scroll = 0.;
+        self.status = None;
+        self.pending = None;
+        if query.is_empty() {
+            return None;
+        }
+        self.status = Some("notch.music.searchLoading");
+        Some(CatalogCommand::Search {
+            id: self.begin(now),
+            query,
+        })
+    }
+
+    pub fn play(&mut self, index: usize, now: Instant) -> Option<CatalogCommand> {
+        if self.pending.is_some() {
+            return None;
+        }
+        let uri = self.tracks.get(index)?.uri.clone();
+        self.status = None;
+        Some(CatalogCommand::Play {
+            id: self.begin(now),
+            uri,
+        })
+    }
+
+    fn begin(&mut self, now: Instant) -> Uuid {
+        let id = Uuid::new_v4();
+        self.pending = Some((id, now + Duration::from_secs(20)));
+        id
+    }
+
+    fn apply(&mut self, id: Uuid, result: CatalogResult) {
+        if !self.pending.is_some_and(|(pending, _)| pending == id) {
+            return;
+        }
+        self.pending = None;
+        self.status = match result {
+            CatalogResult::Tracks(tracks) => {
+                self.tracks = tracks;
+                self.tracks.is_empty().then_some("notch.music.searchEmpty")
+            }
+            CatalogResult::Playing => None,
+            CatalogResult::Failed if self.tracks.is_empty() => Some("notch.music.searchFailed"),
+            CatalogResult::Failed => Some("notch.music.searchPlayFailed"),
+        };
+    }
+
+    pub fn expire(&mut self, now: Instant) -> bool {
+        if let Some((id, deadline)) = self.pending
+            && now >= deadline
+        {
+            self.apply(id, CatalogResult::Failed);
+            return true;
+        }
+        false
+    }
+}
 
 const SHELF_REMOVAL_DURATION: Duration = Duration::from_millis(280);
 const SHELF_REMOVAL_PAINT_FOR: Duration = Duration::from_millis(310);
@@ -174,7 +247,9 @@ impl Shell {
             NotchView::Hud | NotchView::ChargingPeek | NotchView::HeadphonesPeek => {
                 (310., 60., 19., 13.)
             }
-            NotchView::Lyrics => (520., 140. + if nav { 30. } else { 0. }, 32., 22.),
+            NotchView::Lyrics | NotchView::MusicSearch => {
+                (520., 140. + if nav { 30. } else { 0. }, 32., 22.)
+            }
             _ => (420., 140. + if nav { 30. } else { 0. }, 32., 22.),
         };
         Self {
@@ -235,6 +310,9 @@ impl Motion {
     }
     pub fn running(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.start) < self.duration
+    }
+    pub fn delay(&mut self, setup: Duration) {
+        self.start += setup;
     }
     pub fn compact_ready(&self, now: Instant) -> bool {
         if !self.running(now) {
@@ -304,6 +382,7 @@ pub struct UiModel {
     pub position: Duration,
     pub duration: Duration,
     pub lyrics: LyricsAvailability,
+    pub music_search: MusicSearch,
     pub active_lyric: Option<usize>,
     pub lyrics_mode: bool,
     pub volume: f32,
@@ -331,12 +410,9 @@ pub struct UiModel {
     pub quick_share: crate::application::quick_share::Snapshot,
     pub quick_share_ui: super::quick_share::Ui,
     pub(super) shelf_removal: ShelfRemoval,
-    pub shelf_menu: bool,
     pub shelf_scroll: f32,
     pub shelf_drag: bool,
     pub file_drop_destination: Option<crate::application::events::FileDropDestination>,
-    pub shelf_text_open: bool,
-    pub shelf_text: String,
     pub utility: Option<UtilityState>,
     pub focus_today: (u64, u32),
     pub water: Option<WaterState>,
@@ -395,6 +471,7 @@ impl UiModel {
             position: Duration::ZERO,
             duration: Duration::ZERO,
             lyrics: LyricsAvailability::Unavailable,
+            music_search: MusicSearch::default(),
             active_lyric: None,
             lyrics_mode: false,
             volume: 0.,
@@ -422,12 +499,9 @@ impl UiModel {
             quick_share: Default::default(),
             quick_share_ui: Default::default(),
             shelf_removal: ShelfRemoval::default(),
-            shelf_menu: false,
             shelf_scroll: 0.,
             shelf_drag: false,
             file_drop_destination: None,
-            shelf_text_open: false,
-            shelf_text: String::new(),
             utility: None,
             focus_today: (0, 0),
             water: None,
@@ -509,6 +583,9 @@ impl UiModel {
                         self.page_direction = if new >= old { 1. } else { -1. };
                     }
                     self.view = view;
+                    if self.previous_view == NotchView::MusicSearch {
+                        self.music_search = MusicSearch::default();
+                    }
                     self.view_changed = now;
                     self.hover = None;
                     self.previous_hover = None;
@@ -550,6 +627,7 @@ impl UiModel {
                 }
             }
             ViewUpdate::LyricsMode(value) => self.lyrics_mode = value,
+            ViewUpdate::MusicCatalog { id, result } => self.music_search.apply(id, result),
             ViewUpdate::Tasks { tasks, progress } => {
                 self.choreographer.on_tasks_updated(
                     progress.done,
@@ -1012,7 +1090,10 @@ impl UiModel {
             || self.playing
                 && matches!(
                     self.view,
-                    NotchView::Closed | NotchView::Music | NotchView::Lyrics
+                    NotchView::Closed
+                        | NotchView::Music
+                        | NotchView::Lyrics
+                        | NotchView::MusicSearch
                 )
             || now.duration_since(self.list_changed) < Duration::from_millis(220)
             || self.view == NotchView::Lyrics
@@ -1047,7 +1128,7 @@ fn tween(
     from + (to - from) * cubic_bezier(t, curve.0, curve.1, curve.2, curve.3)
 }
 pub fn page_index(view: NotchView, pages: &[crate::domain::notch::NotchPage]) -> Option<usize> {
-    let view = if view == NotchView::Lyrics {
+    let view = if matches!(view, NotchView::Lyrics | NotchView::MusicSearch) {
         NotchView::Music
     } else {
         view

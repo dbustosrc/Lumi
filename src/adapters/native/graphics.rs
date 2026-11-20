@@ -2,9 +2,10 @@
 use super::composition::{Runtime, WindowComposition};
 use super::model::{Rect, SURFACE_WIDTH, Shell};
 use super::scene::{Paint, PathSegment};
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use windows::Win32::Foundation::{HMODULE, HWND};
+use windows::Win32::Foundation::{COLORREF, HMODULE, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Direct3D::*;
@@ -12,41 +13,33 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
+use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyWindow, GetWindowRect, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE,
+    ShowWindow, ULW_ALPHA, UpdateLayeredWindow, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+};
 use windows::core::{Interface, Result, w};
 use windows_numerics::{Matrix3x2, Vector2};
 
 pub struct GraphicsDevice {
+    hardware: OnceCell<HardwareDevice>,
+    factory: ID2D1Factory1,
+    write: IDWriteFactory,
+    round_stroke: ID2D1StrokeStyle,
+}
+struct HardwareDevice {
     d3d: ID3D11Device,
     dxgi: IDXGIFactory2,
     d2d: ID2D1Device,
-    factory: ID2D1Factory1,
-    write: IDWriteFactory,
     composition: Rc<Runtime>,
-    round_stroke: ID2D1StrokeStyle,
 }
 impl GraphicsDevice {
     pub fn new() -> Result<Rc<Self>> {
         unsafe {
-            let mut d3d = None;
-            D3D11CreateDevice(
-                None,
-                D3D_DRIVER_TYPE_HARDWARE,
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                None,
-                D3D11_SDK_VERSION,
-                Some(&mut d3d),
-                None,
-                None,
-            )?;
-            let d3d = d3d.ok_or_else(windows::core::Error::from_thread)?;
-            let dxgi_device: IDXGIDevice = d3d.cast()?;
-            let dxgi = dxgi_device.GetAdapter()?.GetParent::<IDXGIFactory2>()?;
             let factory: ID2D1Factory1 =
                 D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-            let d2d = factory.CreateDevice(&dxgi_device)?;
             let write: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let composition = Runtime::acquire()?;
             let round_stroke = factory
                 .CreateStrokeStyle(
                     &D2D1_STROKE_STYLE_PROPERTIES1 {
@@ -63,14 +56,182 @@ impl GraphicsDevice {
                 )?
                 .into();
             Ok(Rc::new(Self {
+                hardware: OnceCell::new(),
+                factory,
+                write,
+                round_stroke,
+            }))
+        }
+    }
+    fn hardware(&self) -> Result<&HardwareDevice> {
+        if let Some(hardware) = self.hardware.get() {
+            return Ok(hardware);
+        }
+        unsafe {
+            let mut d3d = None;
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut d3d),
+                None,
+                None,
+            )?;
+            let d3d = d3d.ok_or_else(windows::core::Error::from_thread)?;
+            let dxgi_device: IDXGIDevice = d3d.cast()?;
+            let dxgi = dxgi_device.GetAdapter()?.GetParent::<IDXGIFactory2>()?;
+            let d2d = self.factory.CreateDevice(&dxgi_device)?;
+            let composition = Runtime::acquire()?;
+            let _ = self.hardware.set(HardwareDevice {
                 d3d,
                 dxgi,
                 d2d,
-                factory,
-                write,
                 composition,
-                round_stroke,
-            }))
+            });
+            Ok(self.hardware.get().expect("hardware initialized"))
+        }
+    }
+}
+
+struct SoftwarePresentation {
+    target: ID2D1DCRenderTarget,
+    dib: WindowBitmap,
+    window: Option<LayeredWindow>,
+}
+
+struct LayeredWindow(HWND);
+
+impl LayeredWindow {
+    fn new(owner: HWND) -> Result<Self> {
+        unsafe {
+            let hwnd = CreateWindowExW(
+                WS_EX_LAYERED
+                    | WS_EX_TRANSPARENT
+                    | WS_EX_NOACTIVATE
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_TOPMOST,
+                w!("STATIC"),
+                w!(""),
+                WS_POPUP,
+                0,
+                0,
+                0,
+                0,
+                Some(owner),
+                None,
+                None,
+                None,
+            )?;
+            Ok(Self(hwnd))
+        }
+    }
+    fn show(&self, visible: bool) {
+        unsafe {
+            let _ = ShowWindow(self.0, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
+        }
+    }
+}
+
+impl Drop for LayeredWindow {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DestroyWindow(self.0);
+        }
+    }
+}
+
+impl SoftwarePresentation {
+    fn bind(&mut self, width: u32, height: u32) -> Result<()> {
+        let bitmap = WindowBitmap::new(width, height)?;
+        unsafe {
+            self.target.BindDC(
+                bitmap.dc,
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+            )?;
+        }
+        self.dib = bitmap;
+        Ok(())
+    }
+    #[cfg(test)]
+    fn pixels(&self) -> &[u8] {
+        self.dib.pixels()
+    }
+}
+
+struct WindowBitmap {
+    dc: HDC,
+    bitmap: HBITMAP,
+    original: HGDIOBJ,
+    #[cfg(test)]
+    pixels: *const u8,
+    #[cfg(test)]
+    length: usize,
+}
+
+impl WindowBitmap {
+    fn new(width: u32, height: u32) -> Result<Self> {
+        unsafe {
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width as i32,
+                    biHeight: -(height as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut pixels = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut pixels, None, 0)?;
+            let dc = CreateCompatibleDC(None);
+            if dc.is_invalid() {
+                let error = windows::core::Error::from_thread();
+                let _ = DeleteObject(bitmap.into());
+                return Err(error);
+            }
+            let original = SelectObject(dc, bitmap.into());
+            if original.is_invalid() {
+                let error = windows::core::Error::from_thread();
+                let _ = DeleteDC(dc);
+                let _ = DeleteObject(bitmap.into());
+                return Err(error);
+            }
+            Ok(Self {
+                dc,
+                bitmap,
+                original,
+                #[cfg(test)]
+                pixels: pixels.cast(),
+                #[cfg(test)]
+                length: width as usize * height as usize * 4,
+            })
+        }
+    }
+    #[cfg(test)]
+    fn pixels(&self) -> &[u8] {
+        unsafe {
+            let _ = GdiFlush();
+            std::slice::from_raw_parts(self.pixels, self.length)
+        }
+    }
+}
+
+impl Drop for WindowBitmap {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = SelectObject(self.dc, self.original);
+            let _ = DeleteObject(self.bitmap.into());
+            let _ = DeleteDC(self.dc);
         }
     }
 }
@@ -91,8 +252,10 @@ pub struct Surface {
     svg_context: ID2D1DeviceContext5,
     vectors: HashMap<(String, u32, u32, u32), ID2D1SvgDocument>,
     used_vectors: HashSet<(String, u32, u32, u32)>,
-    swap: IDXGISwapChain1,
+    swap: Option<IDXGISwapChain1>,
     composition: Option<WindowComposition>,
+    software: Option<SoftwarePresentation>,
+    outgoing_window: Option<LayeredWindow>,
     hwnd: HWND,
     bitmap: Option<ID2D1Bitmap1>,
     motion_blur: Option<(ID2D1Bitmap1, ID2D1Effect)>,
@@ -118,6 +281,7 @@ impl Surface {
         scale: f32,
     ) -> Result<Self> {
         unsafe {
+            let hardware = device.hardware()?;
             let description = DXGI_SWAP_CHAIN_DESC1 {
                 Width: width,
                 Height: height,
@@ -134,23 +298,82 @@ impl Surface {
                 ..Default::default()
             };
             let swap =
-                device
+                hardware
                     .dxgi
-                    .CreateSwapChainForComposition(&device.d3d, &description, None)?;
-            let context = device
+                    .CreateSwapChainForComposition(&hardware.d3d, &description, None)?;
+            let context = hardware
                 .d2d
                 .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
-            let composition = WindowComposition::new(device.composition.clone(), hwnd, &swap)?;
+            let composition = WindowComposition::new(hardware.composition.clone(), hwnd, &swap)?;
             composition.resize(width, height)?;
+            let mut surface = Self::from_context(device, context, hwnd, width, height, scale)?;
+            surface.swap = Some(swap);
+            surface.composition = Some(composition);
+            surface.bind_target()?;
+            Ok(surface)
+        }
+    }
+    pub fn new_software(
+        device: Rc<GraphicsDevice>,
+        hwnd: HWND,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> Result<Self> {
+        unsafe {
+            let target = device
+                .factory
+                .CreateDCRenderTarget(&D2D1_RENDER_TARGET_PROPERTIES {
+                    r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
+                    dpiX: 96. * scale,
+                    dpiY: 96. * scale,
+                    ..Default::default()
+                })?;
+            let dib = WindowBitmap::new(width, height)?;
+            target.BindDC(
+                dib.dc,
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+            )?;
+            let mut surface =
+                Self::from_context(device, target.cast()?, hwnd, width, height, scale)?;
+            surface.software = Some(SoftwarePresentation {
+                target,
+                dib,
+                window: Some(LayeredWindow::new(hwnd)?),
+            });
+            Ok(surface)
+        }
+    }
+    fn from_context(
+        device: Rc<GraphicsDevice>,
+        context: ID2D1DeviceContext,
+        hwnd: HWND,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> Result<Self> {
+        unsafe {
             let brush = context.CreateSolidColorBrush(&color(0xffffff, 1.), None)?;
-            let mut surface = Self {
+            context.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            Ok(Self {
                 device,
                 svg_context: context.cast()?,
                 vectors: HashMap::new(),
                 used_vectors: HashSet::new(),
                 context,
-                swap,
-                composition: Some(composition),
+                swap: None,
+                composition: None,
+                software: None,
+                outgoing_window: None,
                 hwnd,
                 bitmap: None,
                 motion_blur: None,
@@ -166,14 +389,43 @@ impl Surface {
                 shell_mask: None,
                 shell_shape: None,
                 glass_mask: None,
-            };
-            surface.bind_target()?;
-            Ok(surface)
+            })
+        }
+    }
+    pub fn is_hardware(&self) -> bool {
+        self.software.is_none()
+    }
+    pub fn promote(&mut self) -> Result<()> {
+        let next = Self::new(
+            self.device.clone(),
+            self.hwnd,
+            self.width,
+            self.height,
+            self.scale,
+        )?;
+        let mut previous = std::mem::replace(self, next);
+        self.outgoing_window = previous
+            .software
+            .as_mut()
+            .and_then(|software| software.window.take());
+        Ok(())
+    }
+    pub fn set_software_visibility(&self, visible: bool) {
+        if let Some(window) = self
+            .software
+            .as_ref()
+            .and_then(|software| software.window.as_ref())
+        {
+            window.show(visible);
+        }
+        if !visible && let Some(window) = &self.outgoing_window {
+            window.show(false);
         }
     }
     fn bind_target(&mut self) -> Result<()> {
         unsafe {
-            let buffer: IDXGISurface = self.swap.GetBuffer(0)?;
+            let buffer: IDXGISurface =
+                self.swap.as_ref().expect("hardware surface").GetBuffer(0)?;
             let properties = D2D1_BITMAP_PROPERTIES1 {
                 pixelFormat: D2D1_PIXEL_FORMAT {
                     format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -200,16 +452,27 @@ impl Surface {
             if self.width == width && self.height == height && self.scale == scale {
                 return Ok(());
             }
+            if let Some(software) = &mut self.software {
+                software.bind(width, height)?;
+                software.target.SetDpi(96. * scale, 96. * scale);
+                self.width = width;
+                self.height = height;
+                self.scale = scale;
+                return Ok(());
+            }
             self.context.SetTarget(None);
             self.bitmap = None;
             self.motion_blur = None;
-            self.swap.ResizeBuffers(
-                2,
-                width,
-                height,
-                DXGI_FORMAT_UNKNOWN,
-                DXGI_SWAP_CHAIN_FLAG(0),
-            )?;
+            self.swap
+                .as_ref()
+                .expect("hardware surface")
+                .ResizeBuffers(
+                    2,
+                    width,
+                    height,
+                    DXGI_FORMAT_UNKNOWN,
+                    DXGI_SWAP_CHAIN_FLAG(0),
+                )?;
             self.width = width;
             self.height = height;
             self.scale = scale;
@@ -221,6 +484,10 @@ impl Surface {
         }
     }
     pub fn recreate(&mut self, device: Rc<GraphicsDevice>) -> Result<()> {
+        if self.software.is_some() {
+            *self = Self::new_software(device, self.hwnd, self.width, self.height, self.scale)?;
+            return Ok(());
+        }
         unsafe {
             self.context.SetTarget(None);
         }
@@ -231,17 +498,11 @@ impl Surface {
         Ok(())
     }
     pub fn check_glass(&self) -> Result<()> {
-        self.composition
-            .as_ref()
-            .expect("bound composition")
-            .check_glass()
+        WindowComposition::check_glass(self.hwnd)
     }
     pub fn set_glass(&mut self, enabled: bool) -> Result<()> {
-        if self
-            .composition
-            .as_mut()
-            .expect("bound composition")
-            .set_glass(enabled)?
+        if let Some(composition) = &mut self.composition
+            && composition.set_glass(enabled)?
         {
             self.glass_mask = None;
         }
@@ -249,13 +510,10 @@ impl Surface {
     }
     fn sync_glass_clip(&mut self, shell: Shell, floating: bool) -> Result<()> {
         let key = (shell, floating, self.scale);
-        if !self
-            .composition
-            .as_ref()
-            .expect("bound composition")
-            .glass_enabled()
-            || self.glass_mask == Some(key)
-        {
+        let Some(composition) = &self.composition else {
+            return Ok(());
+        };
+        if !composition.glass_enabled() || self.glass_mask == Some(key) {
             return Ok(());
         }
         if let Some(mask) = &self.shell_mask {
@@ -272,10 +530,7 @@ impl Surface {
                     },
                 )?
             };
-            self.composition
-                .as_ref()
-                .expect("bound composition")
-                .clip(geometry.into())?;
+            composition.clip(geometry.into())?;
             self.glass_mask = Some(key);
         }
         Ok(())
@@ -285,7 +540,11 @@ impl Surface {
             self.used_layouts.clear();
             self.used_vectors.clear();
             self.used_images.clear();
-            self.context.BeginDraw();
+            if let Some(software) = &self.software {
+                software.target.BeginDraw();
+            } else {
+                self.context.BeginDraw();
+            }
             self.context.SetTransform(&Matrix3x2::identity());
             self.context.Clear(Some(&background.map_or(
                 D2D1_COLOR_F {
@@ -300,8 +559,51 @@ impl Surface {
     }
     pub fn end(&mut self) -> Result<()> {
         unsafe {
-            self.context.EndDraw(None, None)?;
-            self.swap.Present(1, DXGI_PRESENT(0)).ok()?;
+            if let Some(software) = &self.software {
+                software.target.EndDraw(None, None)?;
+                let window = software
+                    .window
+                    .as_ref()
+                    .expect("layered presentation window");
+                let mut owner_bounds = RECT::default();
+                GetWindowRect(self.hwnd, &mut owner_bounds)?;
+                let origin = POINT {
+                    x: owner_bounds.left,
+                    y: owner_bounds.top,
+                };
+                let size = SIZE {
+                    cx: self.width as i32,
+                    cy: self.height as i32,
+                };
+                let blend = BLENDFUNCTION {
+                    BlendOp: AC_SRC_OVER as u8,
+                    SourceConstantAlpha: 255,
+                    AlphaFormat: AC_SRC_ALPHA as u8,
+                    ..Default::default()
+                };
+                UpdateLayeredWindow(
+                    window.0,
+                    None,
+                    Some(&origin),
+                    Some(&size),
+                    Some(software.dib.dc),
+                    Some(&POINT::default()),
+                    COLORREF(0),
+                    Some(&blend),
+                    ULW_ALPHA,
+                )?;
+                if IsWindowVisible(self.hwnd).as_bool() && !IsWindowVisible(window.0).as_bool() {
+                    window.show(true);
+                }
+            } else {
+                self.context.EndDraw(None, None)?;
+                self.swap
+                    .as_ref()
+                    .expect("hardware surface")
+                    .Present(1, DXGI_PRESENT(0))
+                    .ok()?;
+                self.outgoing_window = None;
+            }
             self.layouts
                 .retain(|key, _| self.used_layouts.contains(key));
             self.images.retain(|key, _| self.used_images.contains(key));
@@ -1053,7 +1355,7 @@ impl Surface {
             let key = (name.to_owned(), tint, r.w.to_bits(), r.h.to_bits());
             self.used_vectors.insert(key.clone());
             if !self.vectors.contains_key(&key) {
-                let svg = super::icons::svg(name, tint);
+                let svg = super::icons::svg(name, tint, r.w, r.h);
                 let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(svg.as_bytes()))
                     .ok_or_else(|| {
                         windows::core::Error::from_hresult(

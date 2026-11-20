@@ -25,6 +25,16 @@ const DIM: u32 = 0x8a8a8a;
 const GREEN: u32 = 0x32cd65;
 const BLUE: u32 = 0x29a8ff;
 const RED: u32 = 0xff4b55;
+pub(super) const TRAY_BACKGROUND: u32 = 0x121214;
+
+pub(super) fn drop_zone_outline(s: &mut Scene, rect: Rect, active: bool) {
+    s.icon(
+        rect,
+        "drop-zone-border",
+        if active { 0xededf0 } else { 0x515154 },
+    );
+}
+
 fn full(key: &str) -> String {
     crate::i18n::translate(key)
 }
@@ -123,8 +133,8 @@ pub fn notch_scene(m: &UiModel, view: NotchView, now: Instant) -> Scene {
         _ => {
             header(&mut s, m, b);
             match view {
-                NotchView::Music | NotchView::Lyrics => {
-                    music(&mut s, m, b, view == NotchView::Lyrics)
+                NotchView::Music | NotchView::Lyrics | NotchView::MusicSearch => {
+                    music(&mut s, m, b, view, now)
                 }
                 NotchView::Pomodoro => focus(&mut s, m, b),
                 NotchView::Water => water(&mut s, m, b, now),
@@ -320,11 +330,13 @@ fn navigation(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
     }
 }
 
-fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
+fn music(s: &mut Scene, m: &UiModel, b: Rect, view: NotchView, now: Instant) {
+    let wide = view != NotchView::Music;
+    let lyrics = view == NotchView::Lyrics;
     let left = b.x + 42.;
-    let width = if lyrics { 204. } else { 336. };
-    let art_size = if lyrics { 48. } else { 62. };
-    let art_y = if lyrics { 26. } else { 12. };
+    let width = if wide { 204. } else { 336. };
+    let art_size = if wide { 48. } else { 62. };
+    let art_y = if wide { 26. } else { 12. };
     let cover = Rect::new(left, art_y, art_size, art_size);
     s.round(cover, 10., 0x1b1b1d);
     if let Some(art) = &m.artwork {
@@ -363,14 +375,15 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
                 crate::domain::media::MediaConnection::Unavailable => {
                     "notch.music.unavailableSubtitle"
                 }
+                crate::domain::media::MediaConnection::Connected => "notch.music.readySubtitle",
                 _ => "notch.music.notConfiguredSubtitle",
             })
         },
         |track| track.artist.clone(),
     );
     let tx = left + art_size + 16.;
-    let ty = art_y + if lyrics { 4. } else { 27. };
-    let tw = if lyrics { 142. } else { 246. };
+    let ty = art_y + if wide { 4. } else { 27. };
+    let tw = if wide { 142. } else { 246. };
     s.text(Rect::new(tx, ty, tw, 20.), title, 14.5, WHITE, true, false);
     s.text(
         Rect::new(tx, ty + 21., tw, 17.),
@@ -380,10 +393,10 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
         false,
         false,
     );
-    let y = if lyrics { 77. } else { 83. };
-    let fs = if lyrics { 10.5 } else { 11. };
+    let y = if wide { 77. } else { 83. };
+    let fs = if wide { 10.5 } else { 11. };
     s.text(
-        Rect::new(left, y, if lyrics { 36. } else { 40. }, 14.),
+        Rect::new(left, y, if wide { 36. } else { 40. }, 14.),
         format_duration(m.position),
         fs,
         DIM,
@@ -391,9 +404,9 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
         false,
     );
     let bar = Rect::new(
-        left + if lyrics { 38. } else { 44. },
+        left + if wide { 38. } else { 44. },
         y + 4.,
-        if lyrics { 124. } else { 246. },
+        if wide { 124. } else { 246. },
         4.,
     );
     percent(
@@ -409,9 +422,9 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
     s.hit(Rect::new(bar.x, y, bar.w, 12.), Action::Seek, "Seek");
     s.text(
         Rect::new(
-            left + if lyrics { 164. } else { 294. },
+            left + if wide { 164. } else { 294. },
             y,
-            if lyrics { 40. } else { 42. },
+            if wide { 40. } else { 42. },
             14.,
         ),
         format!(
@@ -423,16 +436,16 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
         false,
         true,
     );
-    let transport_y = if lyrics { 93. } else { 104. };
+    let transport_y = if wide { 93. } else { 104. };
     for (bx, glyph, command, label) in [
         (
-            if lyrics { 62. } else { width / 2. - 59. },
+            if wide { 62. } else { width / 2. - 59. },
             "\u{e892}",
             MediaCommand::Previous,
             "Previous track",
         ),
         (
-            if lyrics { 104. } else { width / 2. - 13. },
+            if wide { 104. } else { width / 2. - 13. },
             if m.playing {
                 "transport-pause"
             } else {
@@ -442,7 +455,7 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
             "Play/Pause",
         ),
         (
-            if lyrics { 146. } else { width / 2. + 33. },
+            if wide { 146. } else { width / 2. + 33. },
             "\u{e893}",
             MediaCommand::Next,
             "Next track",
@@ -453,7 +466,7 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
         s.hit(r, Action::Intent(UserIntent::Media(command)), label);
     }
     let bubble = Rect::new(
-        left + if lyrics { 6.5 } else { 8.5 },
+        left + if wide { 6.5 } else { 8.5 },
         transport_y + 4.5,
         17.,
         15.,
@@ -464,11 +477,24 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
         WHITE,
     );
     s.hit(
-        Rect::new(left + if lyrics { 2. } else { 4. }, transport_y, 26., 24.),
+        Rect::new(left + if wide { 2. } else { 4. }, transport_y, 26., 24.),
         Action::Intent(UserIntent::ToggleLyrics),
         "Lyrics",
     );
-    if !lyrics {
+    if m.connection == crate::domain::media::MediaConnection::Connected {
+        let button = Rect::new(left + if wide { 31. } else { 33. }, transport_y, 26., 24.);
+        let active = view == NotchView::MusicSearch;
+        if active {
+            s.round(button, 8., 0x29292c);
+        }
+        s.icon(button.inset(5.), "search", WHITE);
+        s.hit(
+            button,
+            Action::Intent(UserIntent::ToggleMusicSearch),
+            full("notch.music.search"),
+        );
+    }
+    if !wide {
         let vx = left + width - 102.;
         let vy = transport_y - 1.;
         s.icon(Rect::new(vx + 82., vy + 5., 20., 18.), "\u{e767}", WHITE);
@@ -485,7 +511,7 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
             Action::ShowVolume,
             tr("volume"),
         );
-        let alpha = m.volume_amount(Instant::now());
+        let alpha = m.volume_amount(now);
         if alpha > 0.01 {
             s.paint.push(Paint::Opacity(alpha));
             let popup = Rect::new(vx + (1. - alpha) * 10., vy + 1., 76., 24.);
@@ -514,14 +540,18 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
             }
         }
     }
-    if lyrics {
+    if wide {
         s.line(b.x + 256., 28., b.x + 256., 116., 0x1f1f1f, 1.);
         let r = Rect::new(b.x + 268., 26., 210., 91.);
+        if view == NotchView::MusicSearch {
+            music_search(s, m, b, r);
+            return;
+        }
         s.clip(r);
         match &m.lyrics {
             LyricsAvailability::Ready(lines) => {
                 let active = m.active_lyric.unwrap_or(0);
-                let position = m.lyric_position(Instant::now());
+                let position = m.lyric_position(now);
                 for (i, line) in lines
                     .iter()
                     .enumerate()
@@ -557,6 +587,101 @@ fn music(s: &mut Scene, m: &UiModel, b: Rect, lyrics: bool) {
             )),
         }
         s.unclip();
+    }
+}
+
+pub(super) const MUSIC_RESULT_ROW: f32 = 23.;
+
+pub(super) fn music_search_results(body: Rect, has_status: bool) -> Rect {
+    let top = if has_status { 69. } else { 52. };
+    Rect::new(body.x + 268., top, 210., 117. - top)
+}
+
+fn music_search(s: &mut Scene, m: &UiModel, body: Rect, panel: Rect) {
+    let search = &m.music_search;
+    let field = Rect::new(panel.x, panel.y, panel.w - 27., 22.);
+    s.round(field, 6., super::input::EDIT_BACKGROUNDS[2]);
+    s.input(
+        Field::MusicSearch,
+        Rect::new(field.x + 6., field.y + 2., field.w - 12., field.h - 4.),
+        &search.query,
+        false,
+        false,
+        &full("notch.music.search"),
+    );
+    icon_button(
+        s,
+        Rect::new(field.x + field.w + 5., panel.y, 22., 22.),
+        "search",
+        Action::SubmitMusicSearch,
+        &full("notch.music.search"),
+        0x29292c,
+    );
+    if let Some(status) = search.status {
+        s.text(
+            Rect::new(panel.x, 52., panel.w, 15.),
+            full(status),
+            10.,
+            DIM,
+            false,
+            false,
+        );
+    }
+    let viewport = music_search_results(body, search.status.is_some());
+    let extent = search.tracks.len() as f32 * MUSIC_RESULT_ROW;
+    let overflow = (extent - viewport.h).max(0.);
+    let scroll = search.scroll.min(overflow);
+    s.clip(viewport);
+    for (index, track) in search
+        .tracks
+        .iter()
+        .enumerate()
+        .skip((scroll / MUSIC_RESULT_ROW) as usize)
+    {
+        let y = viewport.y + index as f32 * MUSIC_RESULT_ROW - scroll;
+        if y >= viewport.y + viewport.h {
+            break;
+        }
+        let row = Rect::new(viewport.x, y, viewport.w - 6., MUSIC_RESULT_ROW);
+        if row.contains(m.mouse.0, m.mouse.1) {
+            s.round(row, 5., 0x262629);
+        }
+        s.text(
+            Rect::new(row.x + 5., row.y, row.w - 26., 12.),
+            &track.title,
+            10.5,
+            WHITE,
+            true,
+            false,
+        );
+        s.text(
+            Rect::new(row.x + 5., row.y + 12., row.w - 26., 10.),
+            &track.artist,
+            9.,
+            DIM,
+            false,
+            false,
+        );
+        s.icon(
+            Rect::new(row.x + row.w - 15., row.y + 6., 11., 11.),
+            "transport-play",
+            DIM,
+        );
+        s.hit(row, Action::PlayMusicSearchResult(index), &track.title);
+    }
+    s.unclip();
+    if overflow > 0. {
+        let thumb = viewport.h * viewport.h / extent;
+        s.round(
+            Rect::new(
+                viewport.x + viewport.w - 2.,
+                viewport.y + scroll / overflow * (viewport.h - thumb),
+                2.,
+                thumb,
+            ),
+            1.,
+            0x68686d,
+        );
     }
 }
 
@@ -1086,7 +1211,7 @@ fn todo(s: &mut Scene, m: &UiModel, b: Rect) {
         180. + 116. * expansion,
         90.,
     );
-    s.round(list, 21., 0x121214);
+    s.round(list, 21., TRAY_BACKGROUND);
     if summary {
         s.text(
             Rect::new(x + 42., 34., 100., 38.),
@@ -1819,6 +1944,33 @@ fn shelf_card(
                 0x000000,
             );
         }
+        if hovered && entry.item.text().is_some() {
+            let transfer = match use_for {
+                ShelfUse::Shelf if m.settings.desktop.pages.contains(NotchPage::QuickShare) => {
+                    Some((
+                        Action::ShareShelfText(id),
+                        "quickShare.stageShelfText",
+                        "quick-share-radar",
+                    ))
+                }
+                ShelfUse::QuickShare(Tray::Received)
+                    if m.settings.desktop.pages.contains(NotchPage::Shelf) =>
+                {
+                    Some((Action::StoreSharedText(id), "quickShare.storeText", SHELF))
+                }
+                _ => None,
+            };
+            if let Some((action, label, icon)) = transfer {
+                icon_button(
+                    s,
+                    Rect::new(card.x + 1., card.y + 4., 16., 16.),
+                    icon,
+                    action,
+                    &full(label),
+                    0x000000,
+                );
+            }
+        }
     }
 }
 
@@ -1902,56 +2054,18 @@ fn shelf(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
     title(s, b, &tr("nav-shelf"));
     if !m.shelf.is_empty() {
         s.button(
-            Rect::new(b.x + 300., 11., 55., 16.),
+            Rect::new(b.x + 323., 11., 55., 16.),
             full("notch.shelf.clearButton"),
             "",
             Action::Intent(UserIntent::ClearShelf),
             0x212121,
         );
     }
-    s.button(
-        Rect::new(b.x + 360., 10., 22., 18.),
-        "+",
-        "",
-        Action::ShelfMenu,
-        0x212121,
-    );
     let r = Rect::new(b.x + 42., 33., 336., 90.);
-    if m.shelf_text_open {
-        s.round(r, 12., 0x171719);
-        s.round(Rect::new(r.x + 7., r.y + 8., r.w - 14., 32.), 6., 0x212124);
-        s.input(
-            Field::ShelfText,
-            Rect::new(r.x + 14., r.y + 14., r.w - 28., 20.),
-            &m.shelf_text,
-            false,
-            false,
-            &tr("shelf-text-placeholder"),
-        );
-        s.button(
-            Rect::new(r.x + r.w - 155., r.y + 56., 70., 24.),
-            full("notch.todo.cancelButton"),
-            "",
-            Action::CancelShelfText,
-            0x212121,
-        );
-        s.button(
-            Rect::new(r.x + r.w - 78., r.y + 56., 71., 24.),
-            full("notch.todo.saveButton"),
-            "",
-            Action::SaveShelfText,
-            0x212121,
-        );
-        return;
-    }
+    s.round(r, 16., TRAY_BACKGROUND);
     let removal = m.shelf_removal.frame(now);
     if m.shelf.is_empty() && removal.is_none() || m.shelf_drag {
-        s.round(r, 16., if m.shelf_drag { 0x101420 } else { 0x090909 });
-        s.icon(
-            r,
-            "drop-zone-border",
-            if m.shelf_drag { 0xededf0 } else { 0x515154 },
-        );
+        drop_zone_outline(s, r, m.shelf_drag);
         s.icon(
             Rect::new(
                 r.x + 154.,
@@ -1975,20 +2089,21 @@ fn shelf(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
             true,
         );
         if !m.shelf_drag {
+            let hint = Rect::new(r.x + 8., r.y + 68., r.w - 16., 16.);
             s.text(
-                Rect::new(r.x + 8., r.y + 69., r.w - 16., 13.),
-                full("notch.shelf.dropSubtitle"),
+                hint,
+                full("notch.shelf.pasteHint"),
                 9.5,
                 0x8b8b90,
                 false,
                 true,
             );
+            s.hit(
+                hint,
+                Action::Intent(UserIntent::BrowseShelfFiles),
+                full("notch.shelf.browse"),
+            );
         }
-        s.hit(
-            r,
-            Action::Intent(UserIntent::BrowseShelfFiles),
-            full("notch.shelf.addButton"),
-        );
     }
     shelf_cards(
         s,
@@ -2001,29 +2116,6 @@ fn shelf(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
             use_for: ShelfUse::Shelf,
         },
     );
-    if m.shelf_menu {
-        let menu = Rect::new(b.x + 55., 30., 142., 91.);
-        s.round(menu, 10., 0x25252a);
-        for (i, (label, action)) in [
-            (
-                full("notch.shelf.addButton"),
-                Action::Intent(UserIntent::BrowseShelfFiles),
-            ),
-            (tr("shelf-text-button"), Action::ShelfText),
-            (tr("shelf-paste-button"), Action::PasteShelf),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            s.button(
-                Rect::new(menu.x + 5., menu.y + 5. + i as f32 * 28., 132., 24.),
-                label,
-                "",
-                action,
-                0x212121,
-            );
-        }
-    }
 }
 
 fn hud(s: &mut Scene, m: &UiModel, b: Rect, now: Instant) {
